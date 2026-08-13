@@ -1,0 +1,10 @@
+category,expected_life_years,avg_repair_cost,replacement_cost,criticality
+Chiller,20,45000,2100000,high
+AHU,18,18000,650000,medium
+HVAC,15,15000,450000,medium
+Cooling Tower,20,22000,900000,high
+Primary Pump,15,12000,280000,medium
+Secondary Pump,15,12000,260000,medium
+Condenser Pump,15,12000,300000,medium
+FCU,12,6000,90000,low
+DEFAULT,15,15000,500000,medium

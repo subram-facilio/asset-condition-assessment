@@ -1,0 +1,7 @@
+{
+  "name": "Condition Assessment Agent",
+  "app": "condition-assessment-agent",
+  "build": {
+    "publish": "dist"
+  }
+}

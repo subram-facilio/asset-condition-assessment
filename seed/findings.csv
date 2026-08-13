@@ -1,0 +1,2 @@
+id,asset_id,wo_id,attachment_id,source,issue_code,component,location,severity,confidence,extent_percent,evidence,photo_file_id,photo_usable,photo_quality_score,asset_type_match,component_match,event_date,created_at
+0,0,0,0,seed,other_visible_abnormality,seed_component,seed_location,unknown,0.5,0.0,[],0,1,0.5,uncertain,uncertain,2000-01-01T00:00:00Z,2000-01-01T00:00:00Z

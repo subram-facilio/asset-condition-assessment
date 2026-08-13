@@ -1,0 +1,2 @@
+asset_id,asset_name,category,score,grade,dominant_issue,dominant_recurrence_pct,trend_direction,deterioration,rul_years,risk_score,risk_level,visual_risk_level,visual_risk_score,repair_spend,replacement_cost,capex_priority,recommendation,corrective_wo_count,evidence_json,assessed_at
+0,seed_asset,DEFAULT,1.0,GOOD,none,0.0,insufficient_evidence,steady,0.0,0.0,LOW,unknown,0.0,0.0,0.0,-,MONITOR,0,{},2000-01-01T00:00:00Z

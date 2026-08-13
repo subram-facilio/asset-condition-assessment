@@ -1,0 +1,627 @@
+{
+  "title": "CorrectiveRiskRecurrenceAnalysis",
+  "type": "object",
+  "properties": {
+    "asset": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string"
+        },
+        "asset_type": {
+          "type": "string"
+        },
+        "manufacturer": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "asset_type",
+        "manufacturer",
+        "model",
+        "location"
+      ],
+      "additionalProperties": false
+    },
+    "analysis_scope": {
+      "type": "object",
+      "properties": {
+        "work_order_type": {
+          "type": "string",
+          "enum": [
+            "CORRECTIVE"
+          ]
+        },
+        "corrective_work_orders_analyzed": {
+          "type": "number",
+          "description": "Whole number of corrective work orders in scope."
+        },
+        "photos_analyzed": {
+          "type": "number",
+          "description": "Whole number of before photos examined."
+        },
+        "before_photos_only": {
+          "type": "boolean"
+        },
+        "work_orders_with_usable_photos": {
+          "type": "number"
+        },
+        "work_orders_with_insufficient_photos": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "work_order_type",
+        "corrective_work_orders_analyzed",
+        "photos_analyzed",
+        "before_photos_only",
+        "work_orders_with_usable_photos",
+        "work_orders_with_insufficient_photos"
+      ],
+      "additionalProperties": false
+    },
+    "recurring_issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "issue_id": {
+            "type": "string",
+            "description": "Sequential id such as ISS-001."
+          },
+          "issue": {
+            "type": "string",
+            "description": "Normalized issue category from the fixed vocabulary. Report rust, surface rust and rust scaling all as corrosion.",
+            "enum": [
+              "corrosion",
+              "leakage",
+              "oil_leakage",
+              "crack_fracture",
+              "dent_deformation",
+              "broken_component",
+              "missing_component",
+              "insulation_damage",
+              "coating_deterioration",
+              "fouling",
+              "scaling",
+              "thermal_damage",
+              "loose_component",
+              "physical_wear",
+              "surface_deterioration",
+              "other_visible_abnormality"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "occurrence_count": {
+            "type": "number",
+            "description": "Number of DISTINCT corrective work orders in which this issue is evidenced. Multiple photos of the same issue in one work order count as 1."
+          },
+          "occurrence_rate": {
+            "type": "number",
+            "description": "occurrence_count divided by corrective_work_orders_analyzed, rounded to 2 decimal places. Between 0 and 1."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "isolated",
+              "recurring",
+              "highly_recurring",
+              "insufficient_evidence"
+            ]
+          },
+          "affected_components": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "component": {
+                  "type": "string"
+                },
+                "occurrence_count": {
+                  "type": "number",
+                  "description": "Distinct corrective work orders affecting this component for this issue."
+                }
+              },
+              "required": [
+                "component",
+                "occurrence_count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "severity": {
+            "type": "object",
+            "properties": {
+              "overall": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical",
+                  "unknown"
+                ]
+              },
+              "observed_levels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical",
+                    "unknown"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "overall",
+              "observed_levels"
+            ],
+            "additionalProperties": false
+          },
+          "first_occurrence": {
+            "type": "object",
+            "properties": {
+              "work_order_id": {
+                "type": "string"
+              },
+              "date": {
+                "type": "string",
+                "description": "YYYY-MM-DD, or empty string when unknown."
+              }
+            },
+            "required": [
+              "work_order_id",
+              "date"
+            ],
+            "additionalProperties": false
+          },
+          "last_occurrence": {
+            "type": "object",
+            "properties": {
+              "work_order_id": {
+                "type": "string"
+              },
+              "date": {
+                "type": "string",
+                "description": "YYYY-MM-DD, or empty string when unknown."
+              }
+            },
+            "required": [
+              "work_order_id",
+              "date"
+            ],
+            "additionalProperties": false
+          },
+          "trend": {
+            "type": "string",
+            "description": "A trend requires sufficient chronological evidence. Use insufficient_evidence when occurrences do not span enough time.",
+            "enum": [
+              "increasing",
+              "decreasing",
+              "stable",
+              "recurring",
+              "insufficient_evidence"
+            ]
+          },
+          "work_order_references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Between 0.00 and 1.00."
+          }
+        },
+        "required": [
+          "issue_id",
+          "issue",
+          "display_name",
+          "occurrence_count",
+          "occurrence_rate",
+          "status",
+          "affected_components",
+          "severity",
+          "first_occurrence",
+          "last_occurrence",
+          "trend",
+          "work_order_references",
+          "evidence",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "component_analysis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string"
+          },
+          "corrective_work_order_count": {
+            "type": "number"
+          },
+          "issue_count": {
+            "type": "number"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "highest_severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical",
+              "unknown"
+            ]
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical",
+              "unknown"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Between 0.00 and 1.00."
+          }
+        },
+        "required": [
+          "component",
+          "corrective_work_order_count",
+          "issue_count",
+          "issues",
+          "highest_severity",
+          "risk_level",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "issue_summary": {
+      "type": "object",
+      "properties": {
+        "distinct_recurring_issues": {
+          "type": "number"
+        },
+        "most_frequent_issue": {
+          "type": "string"
+        },
+        "most_frequent_issue_count": {
+          "type": "number"
+        },
+        "highest_severity_issue": {
+          "type": "string"
+        },
+        "highest_severity_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical",
+            "unknown"
+          ]
+        },
+        "most_affected_component": {
+          "type": "string"
+        },
+        "most_affected_component_count": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "distinct_recurring_issues",
+        "most_frequent_issue",
+        "most_frequent_issue_count",
+        "highest_severity_issue",
+        "highest_severity_level",
+        "most_affected_component",
+        "most_affected_component_count"
+      ],
+      "additionalProperties": false
+    },
+    "asset_risk": {
+      "type": "object",
+      "properties": {
+        "risk_level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical",
+            "unknown"
+          ]
+        },
+        "risk_score": {
+          "type": "number",
+          "description": "Between 0.00 and 1.00."
+        },
+        "risk_drivers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "driver": {
+                "type": "string"
+              },
+              "occurrence_count": {
+                "type": "number"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "driver",
+              "occurrence_count",
+              "severity"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "risk_level",
+        "risk_score",
+        "risk_drivers"
+      ],
+      "additionalProperties": false
+    },
+    "overall_analysis": {
+      "type": "object",
+      "properties": {
+        "primary_recurring_issue": {
+          "type": "string"
+        },
+        "primary_issue_occurrence_count": {
+          "type": "number"
+        },
+        "most_affected_component": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "recurrence_finding": {
+          "type": "string"
+        },
+        "asset_pattern": {
+          "type": "string"
+        },
+        "risk_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primary_recurring_issue",
+        "primary_issue_occurrence_count",
+        "most_affected_component",
+        "summary",
+        "recurrence_finding",
+        "asset_pattern",
+        "risk_reason"
+      ],
+      "additionalProperties": false
+    },
+    "data_quality": {
+      "type": "object",
+      "properties": {
+        "photo_evidence_confidence": {
+          "type": "number",
+          "description": "Between 0.00 and 1.00."
+        },
+        "assessment_limited": {
+          "type": "boolean"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "photo_evidence_confidence",
+        "assessment_limited",
+        "limitations"
+      ],
+      "additionalProperties": false
+    },
+    "photo_analysis": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "work_order_id": {
+            "type": "string"
+          },
+          "photo_id": {
+            "type": "string"
+          },
+          "usable": {
+            "type": "boolean"
+          },
+          "quality_score": {
+            "type": "number",
+            "description": "Between 0.00 and 1.00."
+          },
+          "quality_issues": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "blur",
+                "darkness",
+                "overexposure",
+                "obstruction",
+                "poor_framing",
+                "excessive_distance",
+                "incorrect_orientation",
+                "irrelevant_image",
+                "duplicate_image",
+                "component_not_visible",
+                "insufficient_visible_surface"
+              ]
+            }
+          },
+          "asset_type_match": {
+            "type": "string",
+            "enum": [
+              "true",
+              "false",
+              "uncertain"
+            ]
+          },
+          "component_match": {
+            "type": "string",
+            "enum": [
+              "true",
+              "false",
+              "uncertain"
+            ]
+          },
+          "defects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "corrosion",
+                    "leakage",
+                    "oil_leakage",
+                    "crack_fracture",
+                    "dent_deformation",
+                    "broken_component",
+                    "missing_component",
+                    "insulation_damage",
+                    "coating_deterioration",
+                    "fouling",
+                    "scaling",
+                    "thermal_damage",
+                    "loose_component",
+                    "physical_wear",
+                    "surface_deterioration",
+                    "other_visible_abnormality"
+                  ]
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical",
+                    "unknown"
+                  ]
+                },
+                "confidence": {
+                  "type": "number",
+                  "description": "Between 0.00 and 1.00."
+                },
+                "extent_percent": {
+                  "type": "number",
+                  "description": "Approximate visible extent between 0 and 100. Use 0 when it cannot reasonably be estimated."
+                },
+                "component": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "work_order_id": {
+                  "type": "string"
+                },
+                "photo_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "severity",
+                "confidence",
+                "extent_percent",
+                "component",
+                "location",
+                "evidence",
+                "work_order_id",
+                "photo_id"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "work_order_id",
+          "photo_id",
+          "usable",
+          "quality_score",
+          "quality_issues",
+          "asset_type_match",
+          "component_match",
+          "defects"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "asset",
+    "analysis_scope",
+    "recurring_issues",
+    "component_analysis",
+    "issue_summary",
+    "asset_risk",
+    "overall_analysis",
+    "data_quality",
+    "photo_analysis"
+  ],
+  "additionalProperties": false
+}
