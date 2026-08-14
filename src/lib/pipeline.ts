@@ -57,15 +57,6 @@ export const INITIAL_STAGES: Stage[] = [
 
 type Emit = (stages: Stage[], note?: string) => void;
 
-/** Bundled copies of the demo evidence, keyed by the attachment filename. */
-const BUNDLED_EVIDENCE = new Set([
-  "corrosion_a1.jpg",
-  "corrosion_a2.jpg",
-  "corrosion_a3.jpg",
-  "insulation_a1.jpg",
-  "crack_a1.jpg",
-]);
-
 export async function runPipeline(assetId: number, emit: Emit): Promise<PipelineResult> {
   const stages = INITIAL_STAGES.map((s) => ({ ...s }));
   const set = (key: string, state: StageState, detail?: string, note?: string) => {
@@ -101,11 +92,20 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
   let photoMode: PhotoMode = "none";
   let uploads: Array<{ wo: GatheredWo; files: Array<{ attachmentId: number; fileId: number; filename: string }> }> = [];
 
+  // How many of this asset's photos already carry findings from an earlier run.
+  // This is what separates "this asset has no visual evidence" from "there was
+  // nothing new to fetch" — the two used to report identically, so an asset with
+  // ten analysed photos and one unreadable new one looked like a total failure.
+  const cachedCount = wosWithPhotos.reduce(
+    (n, w) => n + w.photos.filter((p) => alreadyDone.has(p.attachment_id)).length,
+    0
+  );
+
   if (wosWithPhotos.length === 0) {
     set("photos", "skipped", "No BEFORE photos on this asset's corrective work orders");
     set("agent", "skipped", "Nothing to analyze visually — work-order text stream only");
   } else if (pending.length === 0) {
-    set("photos", "skipped", `All ${bundle.photos_available} photos already analyzed (cached)`);
+    set("photos", "skipped", `All ${cachedCount} photos already analyzed (cached)`);
     set("agent", "skipped", "Reusing cached photo findings");
     photoMode = "cmms_direct";
   } else {
@@ -113,18 +113,31 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     const outcome = await loadPhotos(pending, alreadyDone, (msg) => set("photos", "running", msg));
     uploads = outcome.uploads;
     photoMode = outcome.mode;
-    const total = outcome.uploads.reduce((a, u) => a + u.files.length, 0);
-    if (total === 0) {
-      set("photos", "failed", outcome.reason || "Could not read any photo bytes");
-      set("agent", "skipped", "No readable photo evidence");
-    } else {
+    const loaded = outcome.uploads.reduce((a, u) => a + u.files.length, 0);
+
+    if (loaded > 0) {
       set(
         "photos",
         "done",
         photoMode === "bundled_fallback"
-          ? `${total} photos loaded from bundled evidence (Facilio signed URLs are not readable cross-origin)`
-          : `${total} photos loaded from Facilio`
+          ? `${loaded} photo${loaded === 1 ? "" : "s"} loaded from bundled evidence (Facilio signed URLs are not readable cross-origin)`
+          : `${loaded} photo${loaded === 1 ? "" : "s"} loaded from Facilio`
       );
+    } else if (cachedCount > 0) {
+      // Nothing new could be read, but earlier runs already analysed most of the
+      // asset. The assessment is not degraded, so this is not a failure.
+      const unreadable = outcome.unreadable;
+      set(
+        "photos",
+        "done",
+        `${cachedCount} photo${cachedCount === 1 ? "" : "s"} already analyzed; ${unreadable} new photo${
+          unreadable === 1 ? "" : "s"
+        } could not be read`
+      );
+      set("agent", "skipped", `Reusing ${cachedCount} cached photo findings`);
+    } else {
+      set("photos", "failed", outcome.reason || "Could not read any photo bytes");
+      set("agent", "skipped", "No readable photo evidence");
     }
   }
 
@@ -340,6 +353,7 @@ async function loadPhotos(
 ): Promise<{
   uploads: Array<{ wo: GatheredWo; files: Array<{ attachmentId: number; fileId: number; filename: string }> }>;
   mode: PhotoMode;
+  unreadable: number;
   reason?: string;
 }> {
   const uploads: Array<{ wo: GatheredWo; files: Array<{ attachmentId: number; fileId: number; filename: string }> }> = [];
@@ -377,15 +391,25 @@ async function loadPhotos(
         }
       }
 
-      if (!blob && BUNDLED_EVIDENCE.has(p.filename)) {
-        try {
-          const r = await fetch(`${import.meta.env.BASE_URL}evidence/${p.filename}`);
-          if (r.ok) {
-            blob = await r.blob();
-            via = "bundled";
+      // Bundled copies are keyed on attachment id, never filename: the same
+      // filename legitimately appears on several work orders (corrosion_a1.jpg is
+      // attached to three of them), so a filename key would collide and feed the
+      // wrong image to the agent. `seed/bundle-photos.mjs` writes these.
+      if (!blob) {
+        for (const candidate of [`${p.attachment_id}.jpg`, p.filename]) {
+          if (!candidate) continue;
+          try {
+            const r = await fetch(`${import.meta.env.BASE_URL}evidence/${candidate}`);
+            // A miss on this host redirects to an HTML login page rather than
+            // 404ing, so the content type has to be checked before trusting it.
+            if (r.ok && (r.headers.get("content-type") || "").startsWith("image/")) {
+              blob = await r.blob();
+              via = "bundled";
+              break;
+            }
+          } catch {
+            /* try the next candidate */
           }
-        } catch {
-          /* fall through */
         }
       }
 
@@ -393,7 +417,7 @@ async function loadPhotos(
         failed++;
         lastReason =
           lastReason ||
-          "Facilio's pre-signed photo URLs are not readable cross-origin, and no bundled copy exists for this file";
+          "Facilio's pre-signed photo URLs are not readable cross-origin, and no bundled copy of this attachment exists";
         continue;
       }
 
@@ -415,7 +439,7 @@ async function loadPhotos(
       ? "unavailable"
       : "none";
 
-  return { uploads, mode, reason: lastReason };
+  return { uploads, mode, unreadable: failed, reason: lastReason };
 }
 
 /**
