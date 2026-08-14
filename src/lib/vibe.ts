@@ -12,12 +12,21 @@ export async function action<T = any>(actionSlug: string, payload: Record<string
   return (await vibe.executeAction("facilio-cmms", actionSlug, payload)) as T;
 }
 
+export type AgentName = "photo-validation" | "asset-baseline" | "condition-assessment";
+
 /**
- * Run the photo-validation agent. Structured replies arrive as a JSON *string*
- * in response.content, so parsing here keeps every caller from repeating it.
+ * Run one of the app's agents. Structured replies arrive as a JSON *string* in
+ * response.content, so parsing here keeps every caller from repeating it.
+ *
+ * Agents must be called from the browser: the function sandbox has AGENTS_TOKEN but
+ * no AGENTS_URL, so server-side code cannot reach the agents service.
  */
-export async function runAgent<T = any>(input: string, fileIds?: number[]): Promise<T> {
-  const res: any = await vibe.executeAgent("photo-validation", input, fileIds?.length ? { fileIds } : undefined);
+export async function runAgent<T = any>(
+  input: string,
+  fileIds?: number[],
+  agent: AgentName = "photo-validation"
+): Promise<T> {
+  const res: any = await vibe.executeAgent(agent, input, fileIds?.length ? { fileIds } : undefined);
   const raw = res?.response?.content;
   if (typeof raw !== "string") return raw as T;
   return JSON.parse(raw) as T;

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { fn, inr } from "../lib/vibe";
 import type { Assessment } from "../lib/types";
-import { Empty, Pill, gradeTone, pretty, recommendationTone, riskTone } from "../lib/ui";
+import { Empty, Pill, gradeTone, recommendationTone, riskTone } from "../lib/ui";
 
 interface RegisterData {
   kpis: {
@@ -14,6 +14,7 @@ interface RegisterData {
     repair_count: number;
     monitor_count: number;
     p1_count: number;
+    accelerating_count?: number;
     total_capex_exposure: number;
     total_repair_spend: number;
     avg_score: number;
@@ -21,6 +22,15 @@ interface RegisterData {
   register: Assessment[];
 }
 
+const GRADES = [
+  { key: "GOOD", label: "Good", color: "var(--good)" },
+  { key: "FAIR", label: "Fair", color: "var(--warn)" },
+  { key: "AVERAGE", label: "Average", color: "#d98324" },
+  { key: "POOR", label: "Poor", color: "var(--bad)" },
+  { key: "CRITICAL", label: "Critical", color: "var(--crit)" },
+];
+
+/** The portfolio view: how many need attention, how badly, and which first. */
 export function Dashboard() {
   const [data, setData] = useState<RegisterData | null>(null);
   const [error, setError] = useState("");
@@ -55,9 +65,12 @@ export function Dashboard() {
     );
   }
 
+  const accelerating = register.filter((r) => r.deterioration === "accelerating").length;
   const capexQueue = register
     .filter((r) => r.capex_priority !== "-")
     .sort((a, b) => a.capex_priority.localeCompare(b.capex_priority) || b.risk_score - a.risk_score);
+  const gradeCounts = GRADES.map((g) => ({ ...g, n: register.filter((r) => r.grade === g.key).length }));
+  const maxGrade = Math.max(...gradeCounts.map((g) => g.n), 1);
 
   return (
     <>
@@ -76,29 +89,56 @@ export function Dashboard() {
 
       <div className="grid g4">
         <div className="kpi">
+          <div className="n">{kpis.assets_assessed}</div>
+          <div className="l">Assets analysed</div>
+        </div>
+        <div className="kpi">
           <div className="n" style={{ color: kpis.high_risk ? "var(--bad)" : undefined }}>
             {kpis.high_risk}
           </div>
-          <div className="l">High risk assets</div>
+          <div className="l">High risk</div>
         </div>
         <div className="kpi">
-          <div className="n">{kpis.avg_score.toFixed(2)}</div>
-          <div className="l">Average condition (1 best – 5 worst)</div>
-        </div>
-        <div className="kpi">
-          <div className="n" style={{ color: kpis.p1_count ? "var(--crit)" : undefined }}>
-            {kpis.p1_count}
+          <div className="n" style={{ color: accelerating ? "var(--bad)" : undefined }}>
+            {accelerating}
           </div>
-          <div className="l">P1 CAPEX priorities</div>
+          <div className="l">Accelerating decay</div>
         </div>
         <div className="kpi">
-          <div className="n">{inr(kpis.total_capex_exposure)}</div>
-          <div className="l">Replace / refurbish exposure</div>
+          <div className="n" style={{ color: kpis.replace_count ? "var(--crit)" : undefined }}>
+            {kpis.replace_count}
+          </div>
+          <div className="l">Replace</div>
         </div>
       </div>
 
       <div className="grid g2" style={{ marginTop: 14 }}>
-        <div className="card">
+        <div className="card" style={{ margin: 0 }}>
+          <div className="card-title">Asset health overview</div>
+          {gradeCounts.map((g) => (
+            <div className="dist-row" key={g.key}>
+              <span className="small" style={{ color: g.color, fontWeight: 600 }}>
+                {g.label}
+              </span>
+              <span className="dist-bar">
+                <i style={{ width: `${(g.n / maxGrade) * 100}%`, background: g.color }} />
+              </span>
+              <span className="dist-n">{g.n}</span>
+            </div>
+          ))}
+          <div className="muted small" style={{ marginTop: 8 }}>
+            Condition runs 1 (best) to 5 (worst); portfolio average {kpis.avg_score.toFixed(2)}.
+          </div>
+        </div>
+
+        <div className="card" style={{ margin: 0 }}>
+          <div className="card-title">Risk against condition</div>
+          <RiskMatrix rows={register} />
+        </div>
+      </div>
+
+      <div className="grid g2" style={{ marginTop: 14 }}>
+        <div className="card" style={{ margin: 0 }}>
           <div className="card-title">Recommendations</div>
           <table>
             <tbody>
@@ -112,7 +152,7 @@ export function Dashboard() {
                   <td>
                     <Pill tone={recommendationTone(String(label))}>{String(label)}</Pill>
                   </td>
-                  <td className="num" style={{ fontWeight: 650 }}>
+                  <td className="num" style={{ fontWeight: 650, width: 40 }}>
                     {count as number}
                   </td>
                   <td>
@@ -129,11 +169,11 @@ export function Dashboard() {
             </tbody>
           </table>
           <div className="muted small" style={{ marginTop: 10 }}>
-            Derived by rule from condition, risk and remaining life — not by an LLM.
+            Decided by rule from condition, risk and remaining life — not by a language model.
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" style={{ margin: 0 }}>
           <div className="card-title">CAPEX queue</div>
           {capexQueue.length === 0 ? (
             <div className="muted small">No asset currently warrants capital planning.</div>
@@ -169,24 +209,25 @@ export function Dashboard() {
               </table>
             </div>
           )}
+          <div className="muted small" style={{ marginTop: 10 }}>
+            Cost figures are AI-estimated reference rates — see <a href="#/settings">Settings</a>.
+          </div>
         </div>
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
-        <div className="card-title">Assets by risk</div>
+        <div className="card-title">Condition ranking</div>
         <div className="tbl-wrap">
           <table>
             <thead>
               <tr>
                 <th>Asset</th>
-                <th>Category</th>
                 <th className="num">Condition</th>
-                <th>Grade</th>
                 <th className="num">Risk</th>
-                <th>Dominant issue</th>
-                <th className="num">Recurrence</th>
-                <th>Trend</th>
                 <th className="num">RUL</th>
+                <th>MTBF</th>
+                <th>Deterioration</th>
+                <th>Dominant issue</th>
                 <th>Recommendation</th>
               </tr>
             </thead>
@@ -195,20 +236,35 @@ export function Dashboard() {
                 <tr key={r.asset_id}>
                   <td>
                     <a href={`#/asset/${r.asset_id}`}>{r.asset_name}</a>
-                    <div className="muted small">{r.corrective_wo_count} corrective WOs</div>
+                    <div className="muted small">
+                      {r.category} · {r.corrective_wo_count} corrective WOs
+                    </div>
                   </td>
-                  <td className="small">{r.category}</td>
-                  <td className="num">{r.score.toFixed(2)}</td>
-                  <td>
-                    <Pill tone={gradeTone(r.grade)}>{r.grade}</Pill>
+                  <td className="num">
+                    {r.score.toFixed(2)} <Pill tone={gradeTone(r.grade)}>{r.grade}</Pill>
                   </td>
                   <td className="num">
                     <Pill tone={riskTone(r.risk_level)}>{r.risk_score}</Pill>
                   </td>
-                  <td className="small">{r.dominant_issue_label || "—"}</td>
-                  <td className="num">{r.dominant_recurrence_pct}%</td>
-                  <td className="small muted">{pretty(r.trend_direction)}</td>
                   <td className="num">{r.rul_years}y</td>
+                  <td className="small">
+                    <MtbfCell row={r} />
+                  </td>
+                  <td className="small">
+                    {r.deterioration === "accelerating" ? (
+                      <span style={{ color: "var(--bad)", fontWeight: 600 }}>↑ accelerating</span>
+                    ) : r.deterioration === "improving" ? (
+                      <span style={{ color: "var(--good)" }}>↓ improving</span>
+                    ) : (
+                      <span className="muted">→ steady</span>
+                    )}
+                  </td>
+                  <td className="small">
+                    {r.dominant_issue_label || "—"}
+                    {r.dominant_recurrence_pct ? (
+                      <span className="muted"> {r.dominant_recurrence_pct}%</span>
+                    ) : null}
+                  </td>
                   <td>
                     <Pill tone={recommendationTone(r.recommendation)}>{r.recommendation}</Pill>
                   </td>
@@ -217,6 +273,73 @@ export function Dashboard() {
             </tbody>
           </table>
         </div>
+      </div>
+    </>
+  );
+}
+
+/** MTBF summary for the ranking table, honest when it cannot be computed. */
+function MtbfCell({ row }: { row: Assessment }) {
+  const m = row.dominant_issue_mtbf?.mean_months ?? row.mtbf?.mean_months;
+  const v = row.dominant_issue_mtbf?.verdict ?? row.mtbf?.verdict;
+  if (!m?.available || m.value === null) {
+    return <span className="muted">—</span>;
+  }
+  return (
+    <>
+      {m.value}mo{" "}
+      {v?.available && v.value === "contracting" ? (
+        <span style={{ color: "var(--bad)", fontWeight: 700 }}>↓</span>
+      ) : v?.available && v.value === "lengthening" ? (
+        <span style={{ color: "var(--good)" }}>↑</span>
+      ) : (
+        <span className="muted">→</span>
+      )}
+    </>
+  );
+}
+
+/**
+ * Risk against condition. Both axes are computed, so clusters in the top-right are
+ * the assets that genuinely need capital planning.
+ */
+function RiskMatrix({ rows }: { rows: Assessment[] }) {
+  if (rows.length === 0) return <div className="muted small">Nothing to plot yet.</div>;
+  const tone = (r: Assessment) =>
+    r.risk_level === "HIGH" ? "var(--bad)" : r.risk_level === "MEDIUM" ? "var(--warn)" : "var(--good)";
+  return (
+    <>
+      <div className="matrix-plot">
+        {[100, 75, 50, 25, 0].map((y) => (
+          <span className="matrix-ylab" key={y} style={{ bottom: `${y}%` }}>
+            {y}
+          </span>
+        ))}
+        {rows.map((r) => {
+          // Condition 1..5 across, risk 0..100 up.
+          const x = ((r.score - 1) / 4) * 100;
+          const y = r.risk_score;
+          return (
+            <a
+              className="matrix-dot"
+              key={r.asset_id}
+              href={`#/asset/${r.asset_id}`}
+              title={`${r.asset_name} — condition ${r.score}, risk ${r.risk_score}`}
+              style={{ left: `${Math.min(Math.max(x, 2), 98)}%`, bottom: `${Math.min(y, 97)}%`, background: tone(r) }}
+            >
+              {r.risk_level === "HIGH" && <span>{r.asset_name}</span>}
+            </a>
+          );
+        })}
+      </div>
+      <div className="matrix-xaxis">
+        <span>Good</span>
+        <span>Fair</span>
+        <span>Average</span>
+        <span>Poor</span>
+      </div>
+      <div className="muted small" style={{ marginTop: 8 }}>
+        Risk (0–100) against condition (1–5). High-risk assets are labelled.
       </div>
     </>
   );

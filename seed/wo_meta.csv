@@ -1,0 +1,2 @@
+wo_id,asset_id,subject,description,event_date,priority,status,source_type,no_of_attachments,ingested_at
+0,0,seed_subject,seed_description,2000-01-01T00:00:00Z,seed_priority,seed_status,seed_source,0,2000-01-01T00:00:00Z

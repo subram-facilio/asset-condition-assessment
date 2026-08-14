@@ -1,0 +1,116 @@
+{
+  "title": "AssetBaseline",
+  "type": "object",
+  "properties": {
+    "asset_category": {
+      "type": "string",
+      "description": "The equipment category these baselines apply to, echoed back."
+    },
+    "expected_life_years": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number",
+          "description": "Typical service life in years for this equipment class, from published service-life data."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Between 0.00 and 1.00. High when a recognised service-life standard covers this class."
+        },
+        "basis": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["value", "confidence", "basis", "assumptions"],
+      "additionalProperties": false
+    },
+    "criticality": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Between 0.00 and 1.00."
+        },
+        "basis": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["value", "confidence", "basis", "assumptions"],
+      "additionalProperties": false
+    },
+    "avg_repair_cost": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number",
+          "description": "Indicative cost of one corrective repair, in the requested currency."
+        },
+        "currency": {
+          "type": "string",
+          "description": "ISO currency code, echoing the currency given in the input."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Between 0.00 and 1.00. Keep this low: no customer rate card is available."
+        },
+        "basis": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["value", "currency", "confidence", "basis", "assumptions"],
+      "additionalProperties": false
+    },
+    "replacement_cost": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number",
+          "description": "Indicative full replacement cost, in the requested currency, equipment only."
+        },
+        "currency": {
+          "type": "string",
+          "description": "ISO currency code, echoing the currency given in the input."
+        },
+        "capacity_inferred": {
+          "type": "string",
+          "description": "Capacity or size inferred from the model number, or an empty string when it cannot be inferred."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Between 0.00 and 1.00. Keep this low: cost depends on capacity, region and specification."
+        },
+        "basis": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["value", "currency", "capacity_inferred", "confidence", "basis", "assumptions"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["asset_category", "expected_life_years", "criticality", "avg_repair_cost", "replacement_cost"],
+  "additionalProperties": false
+}

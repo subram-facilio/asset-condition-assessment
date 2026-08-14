@@ -1,0 +1,2 @@
+category,expected_life_years,avg_repair_cost,replacement_cost,criticality,source,conf_life,conf_criticality,conf_repair,conf_replacement,basis_json,assumptions_json,estimated_at
+__seed__,15,15000,500000,medium,seed,0.5,0.5,0.5,0.5,[],[],2000-01-01T00:00:00Z

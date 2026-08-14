@@ -1,4 +1,77 @@
-/** Shapes returned by the condition-engine handlers and the photo-validation agent. */
+/** Shapes returned by the condition-engine handlers and the three agents. */
+
+/**
+ * A derived value that may not be computable. The engine never zero-fills, because
+ * a zero reads as a measurement — an MTTR of 0 would mean "every repair is instant".
+ * Always check `available` before using `value`.
+ */
+export interface Metric<T> {
+  value: T | null;
+  available: boolean;
+  reason?: string;
+  basis?: number;
+}
+
+export interface MtbfGap {
+  from: string;
+  to: string;
+  months: number;
+}
+
+export interface MtbfBlock {
+  series: Metric<MtbfGap[]>;
+  mean_months: Metric<number>;
+  verdict: Metric<string>;
+}
+
+export interface DominantMtbf extends MtbfBlock {
+  issue: string;
+  issue_label: string;
+}
+
+export interface Baselines {
+  source: "actuals" | "override" | "ai_estimate" | "configured" | "fallback";
+  expected_life_years: number;
+  avg_repair_cost: number;
+  replacement_cost: number;
+  criticality: string;
+  confidence: { life: number; criticality: number; repair: number; replacement: number };
+  low_confidence: boolean;
+  estimated_at: string;
+}
+
+export interface Unavailable {
+  metric: string;
+  reason: string;
+}
+
+/** The condition-assessment agent's reply, once it has passed the number lock. */
+export interface Narrative {
+  condition_label: string;
+  summary: string;
+  why_condition: string;
+  why_main_problem: string;
+  why_deterioration: string;
+  why_rul: string;
+  why_recommendation: string;
+  caveats: string[];
+  source: string;
+  generated_at: string;
+  rejected_because?: string;
+}
+
+export interface BaselineRow {
+  category: string;
+  expected_life_years: number;
+  avg_repair_cost: number;
+  replacement_cost: number;
+  criticality: string;
+  source: string;
+  confidence: { life: number; criticality: number; repair: number; replacement: number };
+  basis: Record<string, string[] | string>;
+  assumptions: Record<string, string[]>;
+  estimated_at: string;
+}
 
 export type Severity = "low" | "medium" | "high" | "critical" | "unknown";
 export type RecurrenceStatus = "isolated" | "recurring" | "highly_recurring" | "insufficient_evidence";
@@ -135,6 +208,25 @@ export interface Analysis {
   analysis_source?: string;
 }
 
+export interface RiskTerm {
+  name: string;
+  weight: number;
+  factor: number;
+  contribution: number;
+}
+
+export interface Evidence {
+  inputs: Record<string, unknown>;
+  risk_terms?: RiskTerm[];
+  risk_terms_excluded?: string[];
+  formulas: Record<string, string>;
+  baselines?: Baselines;
+  cost_basis: string;
+  unavailable?: Unavailable[];
+  narrative?: Narrative;
+  narrative_number_lock?: { accepted: boolean; unseen_figures: string[] };
+}
+
 export interface Assessment {
   asset_id: number;
   asset_name: string;
@@ -146,6 +238,9 @@ export interface Assessment {
   dominant_recurrence_pct: number;
   trend_direction: string;
   deterioration: string;
+  deterioration_basis?: string;
+  deterioration_velocity?: Metric<number>;
+  rul?: Metric<number>;
   rul_years: number;
   risk_score: number;
   risk_level: string;
@@ -155,13 +250,20 @@ export interface Assessment {
   replacement_cost: number;
   capex_priority: string;
   recommendation: string;
+  rule_recommendation?: string;
+  warranty?: Metric<string>;
+  warranty_gate_applied?: boolean;
   corrective_wo_count: number;
+  mtbf?: MtbfBlock;
+  dominant_issue_mtbf?: DominantMtbf | null;
+  mttr_hours?: Metric<number>;
+  repeat_failures?: Metric<Array<{ issue: string; gap_days: number }>>;
+  inspection_stream?: Metric<string>;
+  baselines?: Baselines;
+  unavailable?: Unavailable[];
+  narrative_block?: string;
   assessed_at: string;
-  evidence?: {
-    inputs: Record<string, string | number>;
-    formulas: Record<string, string>;
-    cost_basis: string;
-  };
+  evidence?: Evidence;
 }
 
 export interface Finding {

@@ -588,3 +588,252 @@ details.sec[open] > summary {
   font: inherit;
   padding: 0;
 }
+
+/* ---------- honesty widgets ---------- */
+.gaps {
+  border: 1px dashed color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: var(--radius);
+  padding: 11px 13px;
+  background: color-mix(in srgb, var(--warn-soft) 55%, transparent);
+}
+.gaps-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin-bottom: 7px;
+}
+.gap {
+  display: flex;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 3px 0;
+  align-items: baseline;
+}
+.gap-metric {
+  font-weight: 650;
+  color: var(--warn);
+  flex: 0 0 auto;
+  min-width: 128px;
+}
+.gap-reason {
+  color: var(--text-2);
+}
+
+.prov {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-3);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.prov.good {
+  background: var(--good-soft);
+  color: var(--good);
+  border-color: transparent;
+}
+.prov.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: transparent;
+}
+
+/* ---------- MTBF ---------- */
+.mtbf-row {
+  display: grid;
+  grid-template-columns: minmax(150px, auto) 1fr 62px;
+  gap: 10px;
+  align-items: center;
+  padding: 3px 0;
+}
+.mtbf-dates {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.mtbf-bar {
+  height: 9px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.mtbf-bar > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--bad), var(--warn));
+  border-radius: 999px;
+}
+.mtbf-months {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 12.5px;
+}
+.mtbf-verdict {
+  margin-top: 9px;
+  font-weight: 650;
+  font-size: 13px;
+}
+.mtbf-verdict.bad {
+  color: var(--bad);
+}
+.mtbf-verdict.good {
+  color: var(--good);
+}
+.mtbf-verdict.mute {
+  color: var(--text-3);
+}
+
+/* ---------- lifecycle ---------- */
+.life-bar {
+  height: 10px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+}
+.life-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+.life-bar > i.over {
+  background: var(--bad);
+}
+
+/* ---------- health distribution ---------- */
+.dist-row {
+  display: grid;
+  grid-template-columns: 96px 1fr 34px;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+}
+.dist-bar {
+  height: 14px;
+  background: var(--surface-2);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.dist-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+}
+.dist-n {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+/* ---------- risk x condition matrix ---------- */
+.matrix-plot {
+  position: relative;
+  height: 210px;
+  border-left: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  margin: 6px 0 4px 30px;
+}
+.matrix-dot {
+  position: absolute;
+  transform: translate(-50%, 50%);
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  cursor: pointer;
+}
+.matrix-dot span {
+  position: absolute;
+  left: 14px;
+  top: -5px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.matrix-ylab {
+  position: absolute;
+  left: -28px;
+  transform: translateY(50%);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.matrix-xaxis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin-left: 30px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* ---------- recommendation callout ---------- */
+.reco {
+  border: 2px solid;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-top: 12px;
+}
+.reco.crit {
+  border-color: color-mix(in srgb, var(--crit) 55%, transparent);
+  background: var(--crit-soft);
+}
+.reco.bad {
+  border-color: color-mix(in srgb, var(--bad) 55%, transparent);
+  background: var(--bad-soft);
+}
+.reco.warn {
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  background: var(--warn-soft);
+}
+.reco.good {
+  border-color: color-mix(in srgb, var(--good) 55%, transparent);
+  background: var(--good-soft);
+}
+.reco-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+.reco-verb {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.reco-why {
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+/* ---------- narrative ---------- */
+.narr-q {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 12px 0 3px;
+}
+.narr-a {
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.narr-lead {
+  font-size: 15.5px;
+  line-height: 1.5;
+  font-weight: 500;
+}

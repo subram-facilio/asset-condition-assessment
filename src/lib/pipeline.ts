@@ -10,7 +10,7 @@
  * photos of the same leak in one work order cannot become three occurrences.
  */
 import { fn, runAgent, vibe } from "./vibe";
-import type { Analysis, Bundle, GatheredWo } from "./types";
+import type { Analysis, Assessment, Bundle, GatheredWo } from "./types";
 
 export type StageState = "pending" | "running" | "done" | "skipped" | "failed";
 
@@ -24,10 +24,13 @@ export interface Stage {
 export interface PipelineResult {
   bundle: Bundle;
   analysis: Analysis | null;
-  assessment: any;
+  assessment: Assessment;
   photoMode: PhotoMode;
   photosAnalyzed: number;
   countMismatches: string[];
+  /** Whether the explanation survived the number lock, and what tripped it. */
+  narrativeAccepted: boolean;
+  narrativeRejectedFigures: string[];
 }
 
 /** Where the analysed image bytes came from — surfaced in the UI, never hidden. */
@@ -47,7 +50,9 @@ export const INITIAL_STAGES: Stage[] = [
   { key: "agent", label: "Analyze photos", detail: "photo-validation agent, batched one run per work order", state: "pending" },
   { key: "findings", label: "Store findings", detail: "Validate and persist, deduped per attachment", state: "pending" },
   { key: "analysis", label: "Count occurrences and consolidate", detail: "Engine recomputes every count; agent keeps judgment", state: "pending" },
-  { key: "assess", label: "Run lifecycle engines", detail: "Condition, deterioration, RUL, risk, CAPEX, recommendation", state: "pending" },
+  { key: "baseline", label: "Resolve baselines", detail: "Expected life, criticality and costs — the fields Facilio lacks", state: "pending" },
+  { key: "assess", label: "Run lifecycle engines", detail: "Condition, MTBF, deterioration, RUL, risk, CAPEX, recommendation", state: "pending" },
+  { key: "narrate", label: "Explain the result", detail: "condition-assessment agent, number-locked to the computed values", state: "pending" },
 ];
 
 type Emit = (stages: Stage[], note?: string) => void;
@@ -212,10 +217,72 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
       : `${savedAnalysis.analysis.recurring_issues.length} issues counted from distinct work orders`
   );
 
-  /* -------- 7. Lifecycle engines -------- */
+  /* -------- 7. Baselines — the four fields Facilio has no column for -------- */
+  set("baseline", "running");
+  const category = bundle.asset.asset_type || "DEFAULT";
+  try {
+    const prep = await fn<{ cached: boolean; input: string; estimated_at?: string }>("baseline-input", {
+      category,
+      force: 0,
+    });
+    if (prep.cached) {
+      set("baseline", "done", `${category} baselines already estimated — reused, not re-run`);
+    } else {
+      const reply = await runAgent<unknown>(prep.input, undefined, "asset-baseline");
+      const saved = await fn<{ low_confidence: boolean; expected_life_years: number }>("save-baselines", {
+        category,
+        reply: JSON.stringify(reply),
+      });
+      set(
+        "baseline",
+        "done",
+        `${category}: ${saved.expected_life_years}y expected life${
+          saved.low_confidence ? " · cost figures are low-confidence estimates" : ""
+        }`
+      );
+    }
+  } catch (e: any) {
+    // A missing baseline must not sink the assessment; the engine falls back and
+    // records the fallback in provenance.
+    set("baseline", "failed", `Could not estimate baselines for ${category} — using configured values`);
+  }
+
+  /* -------- 8. Lifecycle engines -------- */
   set("assess", "running");
-  const assessment = await fn("assess", { assetId });
-  set("assess", "done", `${assessment.recommendation} · risk ${assessment.risk_score}/100 · RUL ${assessment.rul_years}y`);
+  const assessment = await fn<Assessment>("assess", { assetId });
+  const mtbfNote =
+    assessment.dominant_issue_mtbf?.verdict?.available && assessment.dominant_issue_mtbf.mean_months.available
+      ? ` · ${assessment.dominant_issue_mtbf.issue_label} MTBF ${assessment.dominant_issue_mtbf.mean_months.value}mo ${assessment.dominant_issue_mtbf.verdict.value}`
+      : "";
+  set(
+    "assess",
+    "done",
+    `${assessment.recommendation} · risk ${assessment.risk_score}/100 · RUL ${assessment.rul_years}y${mtbfNote}`
+  );
+
+  /* -------- 9. The explanation, number-locked -------- */
+  set("narrate", "running");
+  let narrativeAccepted = false;
+  let narrativeRejectedFigures: string[] = [];
+  try {
+    const reply = await runAgent<unknown>(assessment.narrative_block || "", undefined, "condition-assessment");
+    const lock = await fn<{ accepted: boolean; unseen_figures: string[] }>("save-narrative", {
+      assetId,
+      block: assessment.narrative_block || "",
+      reply: JSON.stringify(reply),
+    });
+    narrativeAccepted = lock.accepted;
+    narrativeRejectedFigures = lock.unseen_figures || [];
+    set(
+      "narrate",
+      lock.accepted ? "done" : "failed",
+      lock.accepted
+        ? "Explanation written and verified against the computed values"
+        : `Explanation rejected — it contained figures not in the input: ${narrativeRejectedFigures.join(", ")}`
+    );
+  } catch (e: any) {
+    set("narrate", "failed", "Could not generate the explanation — the computed results stand on their own");
+  }
 
   return {
     bundle,
@@ -224,6 +291,8 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     photoMode,
     photosAnalyzed,
     countMismatches: mismatches,
+    narrativeAccepted,
+    narrativeRejectedFigures,
   };
 }
 

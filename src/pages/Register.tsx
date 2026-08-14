@@ -83,8 +83,9 @@ export function Register() {
                   <th>Trend</th>
                   <th>Deterioration</th>
                   <th className="num">RUL</th>
+                  <th>MTBF</th>
+                  <th>Warranty</th>
                   <th className="num">Risk</th>
-                  <th>Visual risk</th>
                   <th className="num">Repair spend</th>
                   <th className="num">Replacement</th>
                   <th>CAPEX</th>
@@ -107,16 +108,35 @@ export function Register() {
                     <td className="num">{r.dominant_recurrence_pct}%</td>
                     <td className="small muted">{pretty(r.trend_direction)}</td>
                     <td className="small muted">{pretty(r.deterioration)}</td>
-                    <td className="num">{r.rul_years}y</td>
+                    <td className="num">{r.rul?.available === false ? <span className="muted">n/a</span> : `${r.rul_years}y`}</td>
+                    <td className="small">
+                      {(() => {
+                        const m = r.dominant_issue_mtbf?.mean_months ?? r.mtbf?.mean_months;
+                        const v = r.dominant_issue_mtbf?.verdict ?? r.mtbf?.verdict;
+                        if (!m?.available || m.value === null) return <span className="muted">—</span>;
+                        return (
+                          <>
+                            {m.value}mo{" "}
+                            {v?.available && v.value === "contracting" ? (
+                              <span style={{ color: "var(--bad)", fontWeight: 700 }}>↓</span>
+                            ) : v?.available && v.value === "lengthening" ? (
+                              <span style={{ color: "var(--good)" }}>↑</span>
+                            ) : (
+                              <span className="muted">→</span>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </td>
+                    <td className="small">
+                      {r.warranty?.available ? (
+                        <Pill tone={r.warranty.value === "active" ? "good" : "mute"}>{r.warranty.value}</Pill>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
                     <td className="num">
                       <Pill tone={riskTone(r.risk_level)}>{r.risk_score}</Pill>
-                    </td>
-                    <td>
-                      {r.visual_risk_level === "unknown" ? (
-                        <span className="muted small">no photos</span>
-                      ) : (
-                        <Pill tone={riskTone(r.visual_risk_level)}>{r.visual_risk_level}</Pill>
-                      )}
                     </td>
                     <td className="num">{inr(r.repair_spend)}</td>
                     <td className="num">{inr(r.replacement_cost)}</td>

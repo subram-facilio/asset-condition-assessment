@@ -171,6 +171,15 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
               </span>
             </div>
           )}
+          {!result.narrativeAccepted && result.narrativeRejectedFigures.length > 0 && (
+            <div className="banner warn" style={{ marginTop: 14 }}>
+              <span>
+                <b>The written explanation was rejected.</b> The agent introduced figures that were not in the
+                computed values it was given ({result.narrativeRejectedFigures.join(", ")}), so the prose was
+                discarded. Every number below is unaffected.
+              </span>
+            </div>
+          )}
           {result.countMismatches.length > 0 && (
             <div className="banner info" style={{ marginTop: 14 }}>
               <span>
@@ -197,11 +206,30 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
                     Condition {result.assessment.score} / 5 · {result.assessment.grade}
                   </Pill>
                   <Pill tone={riskTone(result.assessment.risk_level)}>Risk {result.assessment.risk_score} / 100</Pill>
-                  <Pill tone="mute">RUL {result.assessment.rul_years} years</Pill>
+                  <Pill tone="mute">
+                    RUL{" "}
+                    {result.assessment.rul?.available === false
+                      ? "not available"
+                      : `${result.assessment.rul_years} years`}
+                  </Pill>
+                  {result.assessment.dominant_issue_mtbf?.verdict?.available && (
+                    <Pill
+                      tone={result.assessment.dominant_issue_mtbf.verdict.value === "contracting" ? "bad" : "mute"}
+                    >
+                      MTBF {result.assessment.dominant_issue_mtbf.verdict.value}
+                    </Pill>
+                  )}
                   <Pill tone={recommendationTone(result.assessment.recommendation)}>
                     {result.assessment.recommendation}
                   </Pill>
                 </div>
+                {result.assessment.unavailable && result.assessment.unavailable.length > 0 && (
+                  <div className="muted small" style={{ marginTop: 8 }}>
+                    {result.assessment.unavailable.length} metric
+                    {result.assessment.unavailable.length === 1 ? "" : "s"} could not be computed — see the asset page
+                    for what and why.
+                  </div>
+                )}
               </div>
               <a className="btn primary" href={`#/asset/${result.assessment.asset_id}`}>
                 Open full analysis
