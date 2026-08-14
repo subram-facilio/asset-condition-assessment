@@ -36,9 +36,8 @@ export interface PipelineResult {
 /** Where the analysed image bytes came from — surfaced in the UI, never hidden. */
 export type PhotoMode =
   | "none" // asset has no before photos at all
-  | "cmms_direct" // bytes read straight from the CMMS signed URL
-  | "bundled_fallback" // signed URL not readable cross-origin; used the bundled copy
-  | "unavailable"; // photos exist but no route to their bytes
+  | "cmms_direct" // bytes read live from Facilio, the only accepted source
+  | "unavailable"; // photos exist in Facilio but their bytes could not be read
 
 const AGENT_FILE_CAP = 10; // platform limit: max files per agent run
 const SINGLE_RUN_PHOTO_LIMIT = 6; // above this, batch per work order then consolidate
@@ -56,6 +55,138 @@ export const INITIAL_STAGES: Stage[] = [
 ];
 
 type Emit = (stages: Stage[], note?: string) => void;
+
+/* ------------------------------------------------------------------ *
+ * Batch execution.
+ *
+ * `runBatch` wraps `runPipeline` rather than replacing it, so selecting a single
+ * asset still walks exactly the path that was verified end to end.
+ * ------------------------------------------------------------------ */
+
+export type AssetRunState = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** One asset's slot in a batch: its own stages, its own outcome. */
+export interface AssetRun {
+  assetId: number;
+  assetName: string;
+  state: AssetRunState;
+  stages: Stage[];
+  note?: string;
+  result?: PipelineResult;
+  error?: string;
+  attempts: number;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+export interface BatchTarget {
+  asset_id: number;
+  name: string;
+}
+
+const RETRY_PAUSE_MS = 1500;
+const BETWEEN_ASSETS_MS = 400;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Assess several assets, one at a time.
+ *
+ * Sequential on purpose. Each asset issues an agent call per photo-bearing work
+ * order plus consolidation, baseline and narrative calls; running many at once
+ * produced transient failures, whereas serial-with-one-retry completed every asset.
+ *
+ * A failing asset is isolated — it is marked `failed` with its reason and the batch
+ * carries on, because one bad asset must not abandon the rest.
+ *
+ * `shouldCancel` is checked between assets only. The SDK's HTTP layer ignores
+ * AbortSignal, so an in-flight agent call cannot truly be stopped; pretending
+ * otherwise would leave a half-written assessment. Remaining assets are marked
+ * `cancelled` rather than `failed` so the distinction survives into the UI.
+ */
+export async function runBatch(
+  targets: BatchTarget[],
+  emit: (runs: AssetRun[]) => void,
+  shouldCancel: () => boolean = () => false
+): Promise<AssetRun[]> {
+  const runs: AssetRun[] = targets.map((t) => ({
+    assetId: t.asset_id,
+    assetName: t.name,
+    state: "queued",
+    stages: INITIAL_STAGES.map((s) => ({ ...s })),
+    attempts: 0,
+  }));
+
+  // Emit a fresh array each time so React sees a new reference and re-renders.
+  const publish = () => emit(runs.map((r) => ({ ...r, stages: r.stages.map((s) => ({ ...s })) })));
+  publish();
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+
+    if (shouldCancel()) {
+      for (let j = i; j < runs.length; j++) {
+        if (runs[j].state === "queued") runs[j].state = "cancelled";
+      }
+      publish();
+      break;
+    }
+
+    run.state = "running";
+    run.startedAt = Date.now();
+    run.stages = INITIAL_STAGES.map((s) => ({ ...s }));
+    publish();
+
+    // One retry: the failures seen in practice were transient, not deterministic.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      run.attempts = attempt;
+      try {
+        const result = await runPipeline(run.assetId, (stages, note) => {
+          run.stages = stages;
+          if (note !== undefined) run.note = note;
+          publish();
+        });
+        run.result = result;
+        run.state = "done";
+        run.error = undefined;
+        break;
+      } catch (e: any) {
+        const message = String(e?.message || e);
+        if (attempt === 2) {
+          run.state = "failed";
+          run.error = message;
+          // Leave the stage that threw marked as failed so the row explains itself.
+          run.stages = run.stages.map((s) => (s.state === "running" ? { ...s, state: "failed" } : s));
+        } else {
+          run.note = `Attempt 1 failed — retrying. ${message.slice(0, 120)}`;
+          publish();
+          await sleep(RETRY_PAUSE_MS);
+          run.stages = INITIAL_STAGES.map((s) => ({ ...s }));
+        }
+      }
+    }
+
+    run.finishedAt = Date.now();
+    publish();
+
+    if (i < runs.length - 1) await sleep(BETWEEN_ASSETS_MS);
+  }
+
+  return runs;
+}
+
+/** Rough wall-clock estimate, from what the pipeline actually took in practice. */
+export function estimateSeconds(photoCounts: number[]): { low: number; high: number } {
+  // ~10s for a text-only asset; photo analysis adds roughly 6-12s per work order
+  // with photos, since each is its own agent run.
+  let low = 0;
+  let high = 0;
+  for (const photos of photoCounts) {
+    low += 8 + photos * 4;
+    high += 14 + photos * 10;
+  }
+  return { low: Math.round(low), high: Math.round(high) };
+}
 
 export async function runPipeline(assetId: number, emit: Emit): Promise<PipelineResult> {
   const stages = INITIAL_STAGES.map((s) => ({ ...s }));
@@ -116,13 +247,7 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     const loaded = outcome.uploads.reduce((a, u) => a + u.files.length, 0);
 
     if (loaded > 0) {
-      set(
-        "photos",
-        "done",
-        photoMode === "bundled_fallback"
-          ? `${loaded} photo${loaded === 1 ? "" : "s"} loaded from bundled evidence (Facilio signed URLs are not readable cross-origin)`
-          : `${loaded} photo${loaded === 1 ? "" : "s"} loaded from Facilio`
-      );
+      set("photos", "done", `${loaded} photo${loaded === 1 ? "" : "s"} read live from Facilio`);
     } else if (cachedCount > 0) {
       // Nothing new could be read, but earlier runs already analysed most of the
       // asset. The assessment is not degraded, so this is not a failure.
@@ -340,11 +465,15 @@ function describeWo(wo: GatheredWo, photoNames: string[]): string {
 /**
  * Get before-photo bytes into the app file store.
  *
- * Attempt order, most faithful first:
- *   1. the CMMS pre-signed URL (fails today: the S3 bucket sends no CORS header)
- *   2. a bundled copy of the same file, served same-origin by this app
- * Whichever succeeds is reported to the UI so the source of the evidence is
- * always visible.
+ * There is exactly one source: the live pre-signed URL Facilio mints for the
+ * attachment. No local copy, no substitute — a photo the app cannot fetch from
+ * Facilio is reported unreadable rather than filled in from somewhere else.
+ *
+ * That currently means no photo can be analysed at all, because the storage host
+ * sends no `Access-Control-Allow-Origin` header: the browser receives 200 OK with
+ * the body withheld, and `fetch` rejects with a bare TypeError carrying no status.
+ * The failure is indistinguishable from a dead network from inside the page, which
+ * is why the reason below names the likely cause without asserting it.
  */
 async function loadPhotos(
   wos: GatheredWo[],
@@ -358,7 +487,6 @@ async function loadPhotos(
 }> {
   const uploads: Array<{ wo: GatheredWo; files: Array<{ attachmentId: number; fileId: number; filename: string }> }> = [];
   let direct = 0;
-  let bundled = 0;
   let failed = 0;
   let lastReason = "";
 
@@ -377,39 +505,13 @@ async function loadPhotos(
       if (alreadyDone.has(p.attachment_id)) continue;
 
       let blob: Blob | null = null;
-      let via: "cmms" | "bundled" | null = null;
 
       if (p.signed_url) {
         try {
           const r = await fetch(p.signed_url);
-          if (r.ok) {
-            blob = await r.blob();
-            via = "cmms";
-          }
+          if (r.ok) blob = await r.blob();
         } catch {
-          // Cross-origin read blocked — expected until the bucket allows it.
-        }
-      }
-
-      // Bundled copies are keyed on attachment id, never filename: the same
-      // filename legitimately appears on several work orders (corrosion_a1.jpg is
-      // attached to three of them), so a filename key would collide and feed the
-      // wrong image to the agent. `seed/bundle-photos.mjs` writes these.
-      if (!blob) {
-        for (const candidate of [`${p.attachment_id}.jpg`, p.filename]) {
-          if (!candidate) continue;
-          try {
-            const r = await fetch(`${import.meta.env.BASE_URL}evidence/${candidate}`);
-            // A miss on this host redirects to an HTML login page rather than
-            // 404ing, so the content type has to be checked before trusting it.
-            if (r.ok && (r.headers.get("content-type") || "").startsWith("image/")) {
-              blob = await r.blob();
-              via = "bundled";
-              break;
-            }
-          } catch {
-            /* try the next candidate */
-          }
+          // Cross-origin read refused. Nothing to inspect: no status, no headers.
         }
       }
 
@@ -417,27 +519,19 @@ async function loadPhotos(
         failed++;
         lastReason =
           lastReason ||
-          "Facilio's pre-signed photo URLs are not readable cross-origin, and no bundled copy of this attachment exists";
+          "Facilio's pre-signed attachment URLs are not readable from a browser — the storage host sends no cross-origin permission, so the photo bytes never reach the app";
         continue;
       }
 
       const stored: any = await vibe.uploadFile(new File([blob], p.filename, { type: p.content_type || "image/jpeg" }));
       files.push({ attachmentId: p.attachment_id, fileId: stored.fileId ?? stored.id, filename: p.filename });
-      if (via === "cmms") direct++;
-      else bundled++;
+      direct++;
     }
 
     if (files.length > 0) uploads.push({ wo, files });
   }
 
-  const mode: PhotoMode =
-    direct > 0 && bundled === 0
-      ? "cmms_direct"
-      : bundled > 0
-      ? "bundled_fallback"
-      : failed > 0
-      ? "unavailable"
-      : "none";
+  const mode: PhotoMode = direct > 0 ? "cmms_direct" : failed > 0 ? "unavailable" : "none";
 
   return { uploads, mode, unreadable: failed, reason: lastReason };
 }

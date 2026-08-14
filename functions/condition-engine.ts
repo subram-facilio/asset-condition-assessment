@@ -1296,13 +1296,6 @@ function fallbackNarrative(stats: any) {
  * excludes age/cost/criticality, so they live here instead.
  * ------------------------------------------------------------------ */
 
-function costConfigFor(db: any, category: string) {
-  const { rows } = db.query("select * from cost_config where category = $1 limit 1", [category]);
-  if (rows.length > 0) return rows[0];
-  const { rows: def } = db.query("select * from cost_config where category = 'DEFAULT' limit 1");
-  return def[0] || { expected_life_years: 15, avg_repair_cost: 15000, replacement_cost: 500000, criticality: "medium" };
-}
-
 server.addHandler({
   name: "assess",
   description:
@@ -1429,7 +1422,7 @@ server.addHandler({
       priorityByWo[String(num(w.id))] = String(w.priority?.displayName || w.priority?.name || w.priority || "");
     }
     const { rows: sevWoRows } = db.query(
-      "select wo_id, severity, confidence from findings where asset_id = $1 and asset_id <> 0 and source <> 'photo_unusable'",
+      "select wo_id, severity, confidence, source from findings where asset_id = $1 and asset_id <> 0 and source <> 'photo_unusable'",
       [assetId]
     );
     let sevNum = 0;
@@ -1441,6 +1434,19 @@ server.addHandler({
     }
     const hasFindings = sevWoRows.length > 0;
     const sevIndex = sevDen > 0 ? sevNum / sevDen : 1;
+
+    // Name the severity stream after where its evidence actually came from. With no
+    // readable photos every severity is derived from work-order wording, and calling
+    // that stream "photo_severity" would imply the score was visually corroborated
+    // when nothing was ever seen.
+    let sevPhotoBacked = 0;
+    for (const r of sevWoRows) if (String(r.source) === "photo") sevPhotoBacked++;
+    const sevStreamName =
+      sevPhotoBacked === 0
+        ? "wo_text_severity"
+        : sevPhotoBacked === sevWoRows.length
+        ? "photo_severity"
+        : "mixed_severity";
 
     // Corrective pressure: events per year against a 3/yr reference. The span
     // comes from the work-order dates themselves, not from matched findings —
@@ -1463,7 +1469,7 @@ server.addHandler({
     if (inspection.stream.available && inspection.grade !== null) {
       streams.push({ name: "inspection_grade", w: 0.35, v: num(inspection.grade) });
     }
-    if (hasFindings) streams.push({ name: "photo_severity", w: 0.45, v: sevIndex });
+    if (hasFindings) streams.push({ name: sevStreamName, w: 0.45, v: sevIndex });
     if (totalCorrective > 0) streams.push({ name: "corrective_pressure", w: 0.2, v: pressureIndex });
     const wSum = streams.reduce((a, s) => a + s.w, 0);
     const score = wSum > 0 ? round(streams.reduce((a, s) => a + s.w * s.v, 0) / wSum, 2) : 1;
@@ -1480,39 +1486,59 @@ server.addHandler({
     let velocity: Metric<number> = missing<number>("no prior assessment to measure against", hist.length);
     let deteriorationBasis = "measured";
 
-    if (hist.length >= 2) {
+    // A rate needs a span to divide by. Two assessments hours apart produce an
+    // arithmetically valid but meaningless figure — a 0.14 score wobble overnight
+    // annualises to 1.75 grade/year, which reads as measured fact and is not.
+    const MIN_VELOCITY_DAYS = 60;
+    const spanDays = (() => {
+      if (hist.length < 2) return 0;
+      const t0 = ms(String(hist[0].assessed_at || ""));
+      const t1 = ms(String(hist[hist.length - 1].assessed_at || ""));
+      return t0 !== null && t1 !== null && t1 > t0 ? (t1 - t0) / 86400000 : 0;
+    })();
+    const spanSufficient = spanDays >= MIN_VELOCITY_DAYS;
+
+    if (hist.length >= 2 && spanSufficient) {
       const first = num(hist[0].score);
       const last = num(hist[hist.length - 1].score);
       const delta = last - first;
       deterioration = delta > 0.4 ? "accelerating" : delta < -0.2 ? "improving" : "steady";
-      // Velocity in grade points per year, from the actual elapsed time between the
-      // first and last assessment rather than assuming they are a year apart.
-      const t0 = ms(String(hist[0].assessed_at || ""));
-      const t1 = ms(String(hist[hist.length - 1].assessed_at || ""));
-      if (t0 !== null && t1 !== null && t1 > t0) {
-        const years = (t1 - t0) / (365.25 * 24 * 3600 * 1000);
-        velocity = have(round(delta / Math.max(years, 0.08), 2), hist.length);
-      } else {
-        velocity = missing<number>("assessment timestamps too close together to measure a rate", hist.length);
-      }
+      // Grade points per year over the actual elapsed time. No floor on the
+      // denominator: the span gate above is what makes this divisible.
+      velocity = have(round(delta / (spanDays / 365.25), 2), hist.length);
+      deteriorationBasis = `measured across ${Math.round(spanDays)} days and ${hist.length} assessments`;
     } else {
-      // Cold start: with a single data point there is nothing to measure, so the
-      // direction is inferred from the issue trend and labelled as such.
+      // Cold start, or a history too short to divide by. Either way the direction is
+      // inferred from the corrective evidence and labelled as an inference, and the
+      // velocity stays unavailable with the reason it is unavailable.
+      const days = Math.round(spanDays);
+      const whyNoSpan =
+        hist.length < 2
+          ? "one assessment on record"
+          : days < 1
+          ? `every assessment so far is from the same day, and a rate needs at least ${MIN_VELOCITY_DAYS} days`
+          : `only ${days} day${days === 1 ? "" : "s"} separate the assessments, and a rate needs at least ${MIN_VELOCITY_DAYS}`;
+      velocity = missing<number>(whyNoSpan, hist.length);
+
       const topTrend = stats.recurring_issues[0] ? stats.recurring_issues[0].trend : "insufficient_evidence";
       if (topTrend === "increasing") deterioration = "accelerating";
       deteriorationBasis =
         topTrend === "insufficient_evidence"
-          ? "unavailable — one assessment on record and no issue trend"
-          : `inferred from the ${topTrend} issue trend — one assessment on record`;
+          ? `not established: ${whyNoSpan}, and there is no issue trend either`
+          : `inferred from the ${topTrend} issue trend, because ${whyNoSpan}`;
       // A contracting MTBF is independent corroboration of acceleration.
       if (reliability.mtbf_verdict.available && reliability.mtbf_verdict.value === "contracting") {
         deterioration = "accelerating";
-        deteriorationBasis = `inferred from a contracting MTBF and the ${topTrend} issue trend — one assessment on record`;
+        deteriorationBasis = `inferred from a contracting MTBF and the ${topTrend} issue trend, because ${whyNoSpan}`;
       }
     }
 
     /* ---- Remaining useful life ---- */
-    const expectedLife = num(cfg.expected_life_years) || 15;
+    // Expected life has no Facilio field, so it comes only from the baseline agent
+    // or an override. Without one there is no defensible figure, and RUL says so
+    // rather than inheriting an invented default.
+    const expectedLife = num(cfg.expected_life_years);
+    const haveLife = cfg.resolved && expectedLife > 0;
     const purchased = String(facts.purchasedDate || "");
     let age: Metric<number> = missing<number>("no purchase date recorded on the asset");
     if (purchased.length >= 4) {
@@ -1530,6 +1556,10 @@ server.addHandler({
     let rul: Metric<number>;
     if (!age.available) {
       rul = missing<number>("no purchase date, so age and remaining life cannot be derived");
+    } else if (!haveLife) {
+      rul = missing<number>(
+        `no expected service life is available for category "${category}" — estimate its baselines or set an override`
+      );
     } else {
       const baselineRul = Math.max(expectedLife - ageYears, 0);
       rul = have(
@@ -2236,65 +2266,6 @@ server.addHandler({
   },
 });
 
-/* ------------------------------------------------------------------ *
- * cost_config — the "approved cost database". Nothing is invented; if a
- * category has no configured rate the DEFAULT row is used and labelled.
- * ------------------------------------------------------------------ */
-
-server.addHandler({
-  name: "cost-config",
-  description: "Read the configured expected life, repair/replacement costs and criticality per asset category.",
-  parameters: {},
-  execute: async () => {
-    const db = conn();
-    const { rows } = db.query("select * from cost_config order by category");
-    return {
-      config: rows.map((r: any) => ({
-        category: String(r.category),
-        expected_life_years: num(r.expected_life_years),
-        avg_repair_cost: num(r.avg_repair_cost),
-        replacement_cost: num(r.replacement_cost),
-        criticality: String(r.criticality || "medium"),
-      })),
-    };
-  },
-});
-
-server.addHandler({
-  name: "set-cost-config",
-  description: "Update one asset category's expected life, repair/replacement cost and criticality.",
-  parameters: {
-    category: { description: "Asset category", type: "string" },
-    expectedLifeYears: { description: "Expected useful life in years", type: "number" },
-    avgRepairCost: { description: "Average cost of one corrective repair", type: "number" },
-    replacementCost: { description: "Full replacement cost", type: "number" },
-    criticality: { description: "low | medium | high", type: "string" },
-  },
-  execute: async (args) => {
-    const category = String(args.category || "").trim();
-    if (!category) throw new Error("category is required");
-    let criticality = String(args.criticality || "medium");
-    if (["low", "medium", "high"].indexOf(criticality) === -1) criticality = "medium";
-    const life = clamp(num(args.expectedLifeYears), 1, 100);
-    const repair = Math.max(num(args.avgRepairCost), 0);
-    const replacement = Math.max(num(args.replacementCost), 0);
-
-    const db = conn();
-    const { rows } = db.query("select 1 as hit from cost_config where category = $1 limit 1", [category]);
-    if (rows.length > 0) {
-      db.query(
-        "update cost_config set expected_life_years = $1, avg_repair_cost = $2, replacement_cost = $3, criticality = $4 where category = $5",
-        [life, repair, replacement, criticality, category]
-      );
-    } else {
-      db.query(
-        "insert into cost_config (category, expected_life_years, avg_repair_cost, replacement_cost, criticality) values ($1,$2,$3,$4,$5)",
-        [category, life, repair, replacement, criticality]
-      );
-    }
-    return { ok: true, category, expected_life_years: life, avg_repair_cost: repair, replacement_cost: replacement, criticality };
-  },
-});
 
 /* ------------------------------------------------------------------ *
  * Maintenance helpers
@@ -2348,6 +2319,39 @@ server.addHandler({
       }
     }
     return { ok: true, examined: rows.length, kept: keepIds.length, removed };
+  },
+});
+
+server.addHandler({
+  name: "purge-photo-findings",
+  description:
+    "Delete every photo-derived finding and every stored agent photo reply, across all assets. Used when photo evidence must be re-established from live Facilio data only.",
+  parameters: {},
+  execute: async () => {
+    const db = conn();
+    // Both sources go: `photo` carried the defects, `photo_unusable` recorded photos
+    // that yielded none. Neither can be reproduced from live data at present, so
+    // leaving either behind would show visual evidence the app cannot obtain.
+    const findings = db.query("delete from findings where source in ('photo', 'photo_unusable')");
+    const analyses = db.query("delete from photo_analysis");
+    return {
+      ok: true,
+      findings_deleted: num(findings.rowCount),
+      photo_analyses_deleted: num(analyses.rowCount),
+      note: "Re-run assess for every affected asset: the condition score weighted photo severities, so stored assessments are now stale.",
+    };
+  },
+});
+
+server.addHandler({
+  name: "purge-cost-config",
+  description:
+    "Empty the legacy cost_config table. The table itself cannot be dropped — the app DB role has no DDL — so its rows are removed instead.",
+  parameters: {},
+  execute: async () => {
+    const db = conn();
+    const r = db.query("delete from cost_config");
+    return { ok: true, rows_deleted: num(r.rowCount) };
   },
 });
 
@@ -2412,23 +2416,26 @@ server.addHandler({
  * save-baselines.
  * ------------------------------------------------------------------ */
 
-const BASELINE_FALLBACK = {
-  expected_life_years: 15,
-  avg_repair_cost: 15000,
-  replacement_cost: 500000,
-  criticality: "medium",
-};
-
-/** Resolve one category's baselines, reporting where each number came from. */
+/**
+ * Resolve one category's baselines, reporting where each number came from.
+ *
+ * There is deliberately no default. Expected life, criticality and cost have no
+ * field in Facilio, so their only honest sources are the asset-baseline agent —
+ * which states its basis and confidence — or a human override. When neither
+ * exists the numbers come back as zero with `resolved: false`, and every consumer
+ * reports the dependent metric unavailable. A hardcoded "15 years, medium" would
+ * silently produce a remaining-life figure and a CAPEX priority that nobody could
+ * source, which is worse than admitting the gap.
+ */
 function baselineFor(db: any, category: string) {
   const { rows } = db.query("select * from baselines where category = $1 limit 1", [category]);
   if (rows.length > 0) {
     const r = rows[0];
     return {
-      expected_life_years: num(r.expected_life_years) || BASELINE_FALLBACK.expected_life_years,
+      expected_life_years: num(r.expected_life_years),
       avg_repair_cost: num(r.avg_repair_cost),
       replacement_cost: num(r.replacement_cost),
-      criticality: String(r.criticality || BASELINE_FALLBACK.criticality),
+      criticality: String(r.criticality || ""),
       source: String(r.source || "ai_estimate"),
       confidence: {
         life: num(r.conf_life),
@@ -2443,27 +2450,12 @@ function baselineFor(db: any, category: string) {
     };
   }
 
-  // Legacy cost_config, kept as a fallback so existing rows keep working.
-  const { rows: legacy } = db.query("select * from cost_config where category = $1 limit 1", [category]);
-  const row = legacy[0];
-  if (row) {
-    return {
-      expected_life_years: num(row.expected_life_years) || BASELINE_FALLBACK.expected_life_years,
-      avg_repair_cost: num(row.avg_repair_cost),
-      replacement_cost: num(row.replacement_cost),
-      criticality: String(row.criticality || BASELINE_FALLBACK.criticality),
-      source: "configured",
-      confidence: { life: 0, criticality: 0, repair: 0, replacement: 0 },
-      basis: "[]",
-      assumptions: "[]",
-      estimated_at: "",
-      resolved: true,
-    };
-  }
-
   return {
-    ...BASELINE_FALLBACK,
-    source: "fallback",
+    expected_life_years: 0,
+    avg_repair_cost: 0,
+    replacement_cost: 0,
+    criticality: "",
+    source: "unresolved",
     confidence: { life: 0, criticality: 0, repair: 0, replacement: 0 },
     basis: "[]",
     assumptions: "[]",
