@@ -67,10 +67,27 @@ export function PhotoEvidence({ assetId, onDone }: { assetId: number; onDone: ()
 
       const supplied: SuppliedPhoto[] = [];
       const unmatchedAttachments: Pending[] = [];
+      const wrongSize: string[] = [];
       for (const p of state.pending) {
         const file = byName.get(p.filename.toLowerCase());
-        if (file) supplied.push({ ...p, file });
-        else unmatchedAttachments.push(p);
+        if (!file) {
+          unmatchedAttachments.push(p);
+          continue;
+        }
+        // Facilio reports each attachment's exact byte count, so a name match with a
+        // different size is not that file. Accepting it would attribute someone else's
+        // image to this work order and quietly corrupt the evidence trail — which is
+        // the one thing this product must get right.
+        if (p.size > 0 && file.size !== p.size) {
+          wrongSize.push(`${p.filename} (Facilio has ${p.size} bytes, the file you picked is ${file.size})`);
+          continue;
+        }
+        supplied.push({ ...p, file });
+      }
+
+      if (wrongSize.length > 0 && supplied.length === 0) {
+        setError(`Those files do not match the attachments on record: ${wrongSize.join("; ")}`);
+        return;
       }
 
       const usedNames = new Set(supplied.map((s) => s.filename.toLowerCase()));
@@ -102,6 +119,7 @@ export function PhotoEvidence({ assetId, onDone }: { assetId: number; onDone: ()
       ];
       if (unmatchedAttachments.length > 0) parts.push(`${unmatchedAttachments.length} still missing`);
       if (unusedFiles.length > 0) parts.push(`${unusedFiles.length} selected file(s) matched nothing`);
+      if (wrongSize.length > 0) parts.push(`${wrongSize.length} rejected on size mismatch`);
       setResult(parts.join(" · "));
 
       load();
