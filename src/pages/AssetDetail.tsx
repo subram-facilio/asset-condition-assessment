@@ -1,639 +1,949 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { FButton, FText } from "@facilio/dsm-react-wrapper";
 import { fn, inr } from "../lib/vibe";
 import type { AssetDetail as Detail, Metric, MtbfGap, Narrative } from "../lib/types";
+import { Empty, ErrorBanner, GapList, LifecycleBar, MtbfBars, Provenance, Spark, Val, pretty } from "../lib/ui";
+import { DetailShell, RailFact, type DetailTab } from "../components/DetailShell";
+import { Card, CardTitle, CardNote } from "../components/Card";
+import { EmptyState } from "../components/EmptyState";
 import {
-  Empty,
-  GapList,
-  LifecycleBar,
-  MtbfBars,
-  Pill,
-  Provenance,
-  Spark,
-  Val,
+  StatusTag,
   gradeTone,
-  pretty,
+  priorityTone,
   recommendationTone,
   riskTone,
   severityTone,
   statusTone,
   trendTone,
-} from "../lib/ui";
+} from "../components/StatusTag";
 
 /**
- * The page follows one narrative: what condition is this asset in, why, how fast is
- * it changing, and therefore what should be done. Evidence sits beside each claim,
- * and anything that could not be computed says so rather than showing a zero.
+ * One asset's full analysis.
+ *
+ * The page answers four questions in order — what condition is this in, why, how fast is it
+ * changing, and therefore what should be done — but that is a long read, so the answers are split
+ * across tabs instead of stacked in one column. Overview carries the verdict; the rest is the
+ * working. Evidence sits beside each claim, and anything that could not be computed says so rather
+ * than showing a zero.
+ *
+ * The facts rail is deliberately outside the tabs: category, criticality and expected life are true
+ * on every tab, so switching should never cost the reader the asset's identity.
  */
+
+type TabKey = "overview" | "findings" | "risk" | "evidence" | "why";
+
+/** Two-column grid that collapses to one on a narrow content column. */
+function Split({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+        gap: "var(--spacing-section-small)",
+        alignItems: "start",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Label/value row inside a card — the shape most of this page's detail takes. */
+function Row({ label, children, last }: { label: string; children: ReactNode; last?: boolean }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "var(--spacing-container-xlarge)",
+        padding: "var(--spacing-container-large) 0",
+        borderBottom: last ? "none" : "1px solid var(--colors-border-neutral-base-subtler)",
+      }}
+    >
+      <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
+        {label}
+      </FText>
+      <span
+        style={{
+          font: "var(--text-heading-med-14)",
+          color: "var(--colors-text-main)",
+          textAlign: "right",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "var(--spacing-container-large)",
+          flexWrap: "wrap",
+          justifyContent: "flex-end",
+        }}
+      >
+        {children}
+      </span>
+    </div>
+  );
+}
+
+/** Headline figure tile — the four numbers the whole page resolves to. */
+function Kpi({ value, label }: { value: ReactNode; label: ReactNode }) {
+  return (
+    <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
+      <span style={{ font: "var(--text-heading-smb-20)", lineHeight: "26px", color: "var(--colors-text-main)" }}>
+        {value}
+      </span>
+      <span
+        style={{
+          font: "var(--text-caption-reg-12)",
+          color: "var(--colors-text-caption)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "var(--spacing-container-medium)",
+          flexWrap: "wrap",
+        }}
+      >
+        {label}
+      </span>
+    </Card>
+  );
+}
+
+/** A question the narrative answers, and its answer. */
+function Qa({ q, a }: { q: string; a?: string }) {
+  if (!a) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-medium)" }}>
+      <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+        {q}
+      </FText>
+      <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
+        {a}
+      </FText>
+    </div>
+  );
+}
+
+const TABLE_CELL: React.CSSProperties = {
+  padding: "var(--spacing-container-large) var(--spacing-container-xlarge)",
+  borderBottom: "1px solid var(--colors-border-neutral-base-subtler)",
+  font: "var(--text-body-reg-14)",
+  color: "var(--colors-text-description)",
+  textAlign: "left",
+};
+
+const TABLE_HEAD: React.CSSProperties = {
+  ...TABLE_CELL,
+  font: "var(--text-heading-med-14)",
+  color: "var(--colors-text-main)",
+  backgroundColor: "var(--colors-background-midground-subtle)",
+  whiteSpace: "nowrap",
+};
+
+/** Bordered table inside a card, scrolling horizontally rather than widening the page. */
+function DataGrid({ head, children, minWidth = 520 }: { head: ReactNode; children: ReactNode; minWidth?: number }) {
+  return (
+    <div
+      style={{
+        overflowX: "auto",
+        borderRadius: "var(--border-medium)",
+        border: "1px solid var(--colors-border-neutral-base-subtler)",
+        backgroundColor: "var(--colors-background-container)",
+      }}
+    >
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth }}>
+        <thead>
+          <tr>{head}</tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+}
+
 export function AssetDetail({ assetId }: { assetId: number }) {
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState("");
+  const [tab, setTab] = useState<TabKey>("overview");
 
   useEffect(() => {
     setD(null);
+    setError("");
+    setTab("overview");
     fn<Detail>("asset-detail", { assetId })
       .then(setD)
       .catch((e) => setError(String(e?.message || e)));
   }, [assetId]);
 
-  if (error) return <div className="banner bad">Could not load this asset: {error}</div>;
-  if (!d) return <Empty>Loading analysis…</Empty>;
-
-  const a = d.assessment;
-  const an = d.analysis;
-
-  if (!a && !an) {
-    return (
-      <>
-        <h1>Asset {assetId}</h1>
-        <div className="card">
-          <p style={{ marginTop: 0 }}>This asset has not been assessed yet.</p>
-          <a className="btn primary" href={`#/run/${assetId}`}>
-            Run its assessment
-          </a>
-        </div>
-      </>
-    );
-  }
-
+  const a = d?.assessment;
+  const an = d?.analysis;
   const ev = a?.evidence;
   const inputs: any = ev?.inputs || {};
   const narrative: Narrative | undefined = ev?.narrative;
   const lock = ev?.narrative_number_lock;
   const baselines = ev?.baselines;
   const scope = an?.analysis_scope;
-  const mismatches = d.engine_overrides?.count_mismatches || [];
-  const photoFindings = d.findings.filter((f) => f.source === "photo");
-  const textFindings = d.findings.filter((f) => f.source === "wo_text");
+  const mismatches = d?.engine_overrides?.count_mismatches || [];
+  const findings = d?.findings ?? [];
+  const photoFindings = findings.filter((f) => f.source === "photo");
+  const textFindings = findings.filter((f) => f.source === "wo_text");
 
-  // Prefer the dominant issue's own interval series — it answers whether that
-  // specific problem is accelerating, rather than how busy the asset is overall.
-  const domMtbf = (a?.dominant_issue_mtbf?.series?.value ||
-    inputs.dominant_mtbf_series ||
-    null) as MtbfGap[] | null;
+  // Prefer the dominant issue's own interval series — it answers whether that specific problem is
+  // accelerating, rather than how busy the asset is overall.
+  const domMtbf = (a?.dominant_issue_mtbf?.series?.value || inputs.dominant_mtbf_series || null) as
+    | MtbfGap[]
+    | null;
   const domVerdict =
     a?.dominant_issue_mtbf?.verdict?.value || inputs.dominant_mtbf_verdict || inputs.mtbf_verdict || null;
+
   const ageMetric: Metric<number> = {
     value: inputs.age_years ?? null,
     available: inputs.age_years !== null && inputs.age_years !== undefined,
     reason: "no purchase date recorded on the asset",
   };
 
-  return (
-    <>
-      {/* ---------- identity + verdict up front ---------- */}
-      <div className="row spread" style={{ marginBottom: 14 }}>
-        <div>
-          <div className="muted small">
-            <a href="#/register">Condition register</a> / {a?.category || an?.asset?.asset_type}
-          </div>
-          <h1 style={{ marginBottom: 6 }}>{a?.asset_name || `Asset ${assetId}`}</h1>
-          <div className="muted small">
-            {[an?.asset?.manufacturer, an?.asset?.model, an?.asset?.location].filter(Boolean).join(" · ") || "—"}
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
-            {a && <Pill tone={riskTone(a.risk_level)}>{a.risk_level} RISK</Pill>}
-            {a && <Pill tone={recommendationTone(a.recommendation)}>{a.recommendation}</Pill>}
-          </div>
-          <a className="btn" href={`#/run/${assetId}`}>
-            Re-assess
-          </a>
-        </div>
+  const tabs: DetailTab[] = useMemo(
+    () => [
+      { key: "overview", label: "Overview", icon: { group: "form builder", name: "selectall" } },
+      {
+        key: "findings",
+        label: "Findings",
+        icon: { group: "webtabs", name: "inspection" },
+        badge: an?.recurring_issues.length ?? 0,
+      },
+      { key: "risk", label: "Risk & cost", icon: { group: "alert", name: "triangle-warning-filled" } },
+      {
+        key: "evidence",
+        label: "Evidence",
+        icon: { group: "webtabs", name: "workorder" },
+        badge: findings.length,
+      },
+      { key: "why", label: "Why", icon: { group: "action", name: "info" } },
+    ],
+    [an?.recurring_issues.length, findings.length]
+  );
+
+  if (error) {
+    return (
+      <div style={{ padding: "var(--spacing-section-small)" }}>
+        <ErrorBanner>Could not load this asset: {error}</ErrorBanner>
       </div>
+    );
+  }
+  if (!d) return <Empty>Loading analysis…</Empty>;
 
-      {/* ---------- 1. the four headline numbers ---------- */}
-      {a && (
-        <div className="grid g4">
-          <div className="kpi">
-            <div className="n">{a.score.toFixed(2)}</div>
-            <div className="l">
-              Condition of 5 · <Pill tone={gradeTone(a.grade)}>{a.grade}</Pill>
-            </div>
-          </div>
-          <div className="kpi">
-            <div className="n">{a.risk_score}</div>
-            <div className="l">
-              Risk of 100 · <Pill tone={riskTone(a.risk_level)}>{a.risk_level}</Pill>
-            </div>
-          </div>
-          <div className="kpi">
-            <div className="n">
-              <Val metric={ageMetric} suffix="y" fallbackLabel="unknown" />
-            </div>
-            <div className="l">Age in service</div>
-          </div>
-          <div className="kpi">
-            <div className="n">
-              <Val metric={a.rul} suffix="y" fallbackLabel="unavailable" />
-            </div>
-            <div className="l">
-              Remaining life{" "}
-              {baselines && <Provenance source={baselines.source} confidence={baselines.confidence?.life} />}
-            </div>
-          </div>
-        </div>
-      )}
+  if (!a && !an) {
+    return (
+      <EmptyState
+        title={`Asset ${assetId} has not been assessed`}
+        description="Run its assessment and the agent will read every corrective work order and before-maintenance photo Facilio holds for it."
+        action={
+          <FButton
+            appearance="primary"
+            size="medium"
+            onButtonClick={() => {
+              window.location.hash = `/run/${assetId}`;
+            }}
+          >
+            Run its assessment
+          </FButton>
+        }
+      />
+    );
+  }
 
-      {/* ---------- 2. the explanation ---------- */}
-      {narrative && narrative.source === "condition_assessment_agent" && (
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="card-title">Assessment</div>
-          <p className="narr-lead" style={{ marginTop: 0 }}>
-            {narrative.summary}
-          </p>
-          <div className="grid g2" style={{ marginTop: 4 }}>
-            <div>
-              <div className="narr-q">Why this condition</div>
-              <div className="narr-a">{narrative.why_condition}</div>
-              <div className="narr-q">The main problem</div>
-              <div className="narr-a">{narrative.why_main_problem}</div>
-            </div>
-            <div>
-              <div className="narr-q">How fast it is changing</div>
-              <div className="narr-a">{narrative.why_deterioration}</div>
-              <div className="narr-q">Remaining life</div>
-              <div className="narr-a">{narrative.why_rul}</div>
-            </div>
-          </div>
-          <div className={`reco ${recommendationTone(a?.recommendation || "")}`}>
-            <div className="reco-head">
-              <span className="reco-verb">{a?.recommendation}</span>
-              {a?.capex_priority !== "-" && <Pill tone="crit">CAPEX {a?.capex_priority}</Pill>}
-              <span className="muted small">
-                {inr(a?.replacement_cost || 0)}{" "}
-                {baselines && <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />}
-              </span>
-            </div>
-            <div className="reco-why">{narrative.why_recommendation}</div>
-            {a?.warranty_gate_applied && (
-              <div className="small" style={{ marginTop: 8, fontWeight: 600 }}>
-                The rule produced {a.rule_recommendation}, but this asset is still under warranty, so it was
-                downgraded — replacing an asset the manufacturer is liable for wastes the remaining cover.
-              </div>
+  return (
+    <DetailShell
+      backHref="#/register"
+      backLabel="Condition register"
+      title={a?.asset_name || `Asset ${assetId}`}
+      titleMeta={
+        [an?.asset?.manufacturer, an?.asset?.model, an?.asset?.location].filter(Boolean).join(" · ") || undefined
+      }
+      status={
+        a && (
+          <>
+            <StatusTag tone={riskTone(a.risk_level)}>{a.risk_level} RISK</StatusTag>
+            <StatusTag tone={recommendationTone(a.recommendation)}>{a.recommendation}</StatusTag>
+          </>
+        )
+      }
+      actions={
+        <FButton
+          appearance="secondary"
+          size="medium"
+          onButtonClick={() => {
+            window.location.hash = `/run/${assetId}`;
+          }}
+        >
+          Re-assess
+        </FButton>
+      }
+      tabs={tabs}
+      activeTab={tab}
+      onTabChange={(k) => setTab(k as TabKey)}
+      railLabel="Asset"
+      rail={
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+          <RailFact label="Category">{a?.category || an?.asset?.asset_type || "—"}</RailFact>
+          <RailFact label="Manufacturer">{an?.asset?.manufacturer || "—"}</RailFact>
+          <RailFact label="Model">{an?.asset?.model || "—"}</RailFact>
+          <RailFact label="Location">{an?.asset?.location || "—"}</RailFact>
+          <RailFact label="In service">
+            {String(an?.asset?.purchasedDate || "").slice(0, 10) || "not recorded"}
+          </RailFact>
+          <RailFact label="Expected service life">
+            {inputs.expected_life_years ? `${inputs.expected_life_years} years` : "—"}
+          </RailFact>
+          <RailFact label="Criticality">{inputs.criticality || "—"}</RailFact>
+          <RailFact label="Warranty">
+            {a?.warranty?.available ? (
+              <StatusTag tone={a.warranty.value === "active" ? "good" : "mute"}>
+                {a.warranty.value}
+                {inputs.warranty_expiry ? ` ${inputs.warranty_expiry}` : ""}
+              </StatusTag>
+            ) : (
+              "not recorded"
             )}
-          </div>
-          {narrative.caveats?.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <div className="narr-q">What this assessment could not see</div>
-              <ul className="ev">
-                {narrative.caveats.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            </div>
+          </RailFact>
+          <RailFact label="Corrective work orders">
+            {scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0}
+          </RailFact>
+          {baselines && (
+            <RailFact label="Baselines">
+              <Provenance source={baselines.source} confidence={baselines.confidence?.life} />
+            </RailFact>
           )}
-          <div className="muted small" style={{ marginTop: 10 }}>
-            Written by the condition-assessment agent from the computed values, and verified to contain no figure
-            absent from them.
+        </div>
+      }
+    >
+      {/* ══════════════════════════════════════════════════════════ overview */}
+      {tab === "overview" && a && (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "var(--spacing-container-xxlarge)",
+            }}
+          >
+            <Kpi
+              value={a.score.toFixed(2)}
+              label={
+                <>
+                  Condition of 5 <StatusTag tone={gradeTone(a.grade)}>{a.grade}</StatusTag>
+                </>
+              }
+            />
+            <Kpi
+              value={a.risk_score}
+              label={
+                <>
+                  Risk of 100 <StatusTag tone={riskTone(a.risk_level)}>{a.risk_level}</StatusTag>
+                </>
+              }
+            />
+            <Kpi value={<Val metric={ageMetric} suffix="y" fallbackLabel="unknown" />} label="Age in service" />
+            <Kpi
+              value={<Val metric={a.rul} suffix="y" fallbackLabel="unavailable" />}
+              label={
+                <>
+                  Remaining life
+                  {baselines && <Provenance source={baselines.source} confidence={baselines.confidence?.life} />}
+                </>
+              }
+            />
           </div>
-        </div>
-      )}
 
-      {narrative && narrative.source === "rejected_agent_reply" && (
-        <div className="banner warn" style={{ marginTop: 14 }}>
-          <span>
-            <b>The written explanation was rejected.</b> {narrative.rejected_because}. The computed results below are
-            unaffected — only the prose was discarded.
-          </span>
-        </div>
-      )}
+          {narrative && narrative.source === "condition_assessment_agent" && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle icon={{ group: "form builder", name: "selectall" }}>Assessment</CardTitle>
 
-      {a && !narrative && (
-        <div className="banner info" style={{ marginTop: 14 }}>
-          <span>
-            No written explanation stored yet. <a href={`#/run/${assetId}`}>Re-assess</a> to generate one — the numbers
-            below stand on their own regardless.
-          </span>
-        </div>
-      )}
+              <FText appearance="bodyReg14" styleProps={{ color: "textMain", display: "block" }}>
+                {narrative.summary}
+              </FText>
 
-      {/* ---------- 3. how fast it is changing ---------- */}
-      {a && (
-        <div className="grid g2" style={{ marginTop: 14 }}>
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Deterioration</div>
-            <div className="row" style={{ marginBottom: 8 }}>
-              <Pill
-                tone={
-                  a.deterioration === "accelerating" ? "bad" : a.deterioration === "improving" ? "good" : "mute"
-                }
+              <Split>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                  <Qa q="Why this condition" a={narrative.why_condition} />
+                  <Qa q="The main problem" a={narrative.why_main_problem} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                  <Qa q="How fast it is changing" a={narrative.why_deterioration} />
+                  <Qa q="Remaining life" a={narrative.why_rul} />
+                </div>
+              </Split>
+
+              {/* The verdict, called out rather than buried: this is what the page is for. */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "var(--spacing-container-large)",
+                  padding: "var(--spacing-container-xlarge)",
+                  borderRadius: "var(--border-medium)",
+                  border: "1px solid var(--colors-border-neutral-base-subtle)",
+                  backgroundColor: "var(--colors-background-container)",
+                }}
               >
-                {pretty(a.deterioration)}
-              </Pill>
-              {a.deterioration_velocity?.available ? (
-                <span className="small">
-                  <b>{a.deterioration_velocity.value}</b> grade per year
-                </span>
-              ) : (
-                <span className="muted small">velocity not measurable yet</span>
-              )}
-            </div>
-            {d.history.length >= 2 ? (
-              <Spark values={d.history.map((h) => h.score)} tone="var(--bad)" />
-            ) : (
-              <div className="muted small">
-                One assessment on record, so there is no measured trajectory yet. Re-assess over time to build one.
-              </div>
-            )}
-            {inputs.deterioration_basis && (
-              <div className="muted small" style={{ marginTop: 8 }}>
-                Basis: {inputs.deterioration_basis}.
-              </div>
-            )}
-          </div>
-
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">
-              Time between corrective events
-              {a.dominant_issue_mtbf ? ` — ${a.dominant_issue_mtbf.issue_label}` : ""}
-            </div>
-            {domMtbf && domMtbf.length > 0 ? (
-              <MtbfBars gaps={domMtbf} verdict={domVerdict} />
-            ) : (
-              <div className="muted small">
-                Not enough dated corrective events to measure an interval.
-              </div>
-            )}
-            <div className="row spread small muted" style={{ marginTop: 10 }}>
-              <span>
-                Mean <Val metric={a.mtbf?.mean_months} suffix=" months" fallbackLabel="n/a" /> across all corrective
-                events
-              </span>
-              <span>
-                MTTR <Val metric={a.mttr_hours} suffix=" h" fallbackLabel="not recorded" />
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---------- 4. why: the recurring issues ---------- */}
-      {an && an.recurring_issues.length > 0 && (
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="card-title">
-            Recurring issues — the recurrence unit is the corrective work order, never the photo
-          </div>
-          {an.recurring_issues.map((i) => (
-            <div className="issue" key={i.issue_id}>
-              <div className="issue-head">
-                <span className="issue-name">{i.display_name}</span>
-                <Pill tone={statusTone(i.status)}>{pretty(i.status)}</Pill>
-                <Pill tone={severityTone(i.severity.overall)}>{i.severity.overall} severity</Pill>
-                <Pill tone={trendTone(i.trend)}>{pretty(i.trend)}</Pill>
-                <span className="muted small" style={{ marginLeft: "auto" }}>
-                  confidence {i.confidence.toFixed(2)}
-                </span>
-              </div>
-
-              <div className="row" style={{ marginTop: 8, gap: 18 }}>
-                <span>
-                  <span className="occ" style={{ fontSize: 17 }}>
-                    {i.occurrence_count}
-                  </span>{" "}
-                  <span className="muted small">of {scope?.corrective_work_orders_analyzed} corrective WOs</span>
-                </span>
-                <span>
-                  <span className="occ">{(i.occurrence_rate * 100).toFixed(0)}%</span>{" "}
-                  <span className="muted small">occurrence rate</span>
-                </span>
-                {i.first_occurrence && (
-                  <span className="muted small">
-                    first {i.first_occurrence.date} · last {i.last_occurrence?.date}
-                  </span>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--spacing-container-large)",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <StatusTag tone={recommendationTone(a.recommendation)}>{a.recommendation}</StatusTag>
+                  {a.capex_priority !== "-" && (
+                    <StatusTag tone={priorityTone(a.capex_priority)}>CAPEX {a.capex_priority}</StatusTag>
+                  )}
+                  <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                    {inr(a.replacement_cost)}
+                  </FText>
+                  {baselines && (
+                    <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
+                  )}
+                </div>
+                <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
+                  {narrative.why_recommendation}
+                </FText>
+                {a.warranty_gate_applied && (
+                  <FText appearance="captionReg12" styleProps={{ color: "textMain", display: "block" }}>
+                    The rule produced {a.rule_recommendation}, but this asset is still under warranty, so it was
+                    downgraded — replacing an asset the manufacturer is liable for wastes the remaining cover.
+                  </FText>
                 )}
               </div>
 
-              <div className="bar">
-                <i style={{ width: `${Math.min(i.occurrence_rate * 100, 100)}%` }} />
-              </div>
-
-              <div className="row small" style={{ gap: 6 }}>
-                <span className="muted">Components:</span>
-                {i.affected_components.map((c) => (
-                  <Pill tone="mute" key={c.component}>
-                    {pretty(c.component)} ×{c.occurrence_count}
-                  </Pill>
-                ))}
-              </div>
-
-              <ul className="ev">
-                {i.evidence.map((e, k) => (
-                  <li key={k}>{e}</li>
-                ))}
-              </ul>
-
-              <div className="row small" style={{ marginTop: 8, gap: 6 }}>
-                <span className="muted">Work orders:</span>
-                <span className="wo-refs">
-                  {i.work_order_references.map((w) => (
-                    <span className="wo-ref" key={w}>
-                      #{w}
-                    </span>
-                  ))}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ---------- 5. where: component concentration + per-year matrix ---------- */}
-      <div className="grid g2" style={{ marginTop: 14 }}>
-        {an && an.component_analysis.length > 0 && (
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Component concentration</div>
-            <div className="tbl-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Component</th>
-                    <th className="num">Corrective WOs</th>
-                    <th className="num">Issues</th>
-                    <th>Worst severity</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {an.component_analysis.map((c) => (
-                    <tr key={c.component}>
-                      <td style={{ fontWeight: 550 }}>{pretty(c.component)}</td>
-                      <td className="num">{c.corrective_work_order_count}</td>
-                      <td className="num">{c.issue_count}</td>
-                      <td>
-                        <Pill tone={severityTone(c.highest_severity)}>{c.highest_severity}</Pill>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {d.issue_matrix.years.length > 0 && (
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Occurrences per year (distinct work orders)</div>
-            <div className="tbl-wrap">
-              <table className="matrix">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    {d.issue_matrix.years.map((y) => (
-                      <th key={y} style={{ textAlign: "center" }}>
-                        {y}
-                      </th>
+              {narrative.caveats?.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-medium)" }}>
+                  <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+                    What this assessment could not see
+                  </FText>
+                  <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-body-reg-14)", color: "var(--colors-text-description)" }}>
+                    {narrative.caveats.map((c, i) => (
+                      <li key={i}>{c}</li>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.issue_matrix.rows.map((r) => (
-                    <tr key={r.issue}>
-                      <td style={{ fontWeight: 550 }}>{r.label}</td>
-                      {r.counts.map((c, i) => (
-                        <td className={`cell heat${Math.min(c, 3)}`} key={i}>
-                          {c || "·"}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {d.issue_matrix.years.length < 2 && (
-              <div className="muted small" style={{ marginTop: 8 }}>
-                Only one calendar year of evidence, so no trend is claimed.
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+                  </ul>
+                </div>
+              )}
 
-      {/* ---------- 6. lifecycle and cost ---------- */}
-      {a && (
-        <div className="grid g2" style={{ marginTop: 14 }}>
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Lifecycle</div>
+              <CardNote>
+                Written by the condition-assessment agent from the computed values, and verified to contain no
+                figure absent from them.
+              </CardNote>
+            </Card>
+          )}
+
+          {narrative && narrative.source === "rejected_agent_reply" && (
+            <ErrorBanner>
+              <b>The written explanation was rejected.</b> {narrative.rejected_because}. The computed results are
+              unaffected — only the prose was discarded.
+            </ErrorBanner>
+          )}
+
+          {!narrative && (
+            <ErrorBanner>
+              No written explanation stored yet. Re-assess to generate one — the numbers stand on their own
+              regardless.
+            </ErrorBanner>
+          )}
+
+          <Split>
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>Deterioration</CardTitle>
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
+                <StatusTag
+                  tone={a.deterioration === "accelerating" ? "bad" : a.deterioration === "improving" ? "good" : "mute"}
+                >
+                  {pretty(a.deterioration)}
+                </StatusTag>
+                {a.deterioration_velocity?.available ? (
+                  <FText appearance="bodyReg14" styleProps={{ color: "textDescription" }}>
+                    {a.deterioration_velocity.value} grade per year
+                  </FText>
+                ) : (
+                  <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                    velocity not measurable yet
+                  </FText>
+                )}
+              </div>
+              {d.history.length >= 2 ? (
+                <Spark
+                  values={d.history.map((h) => h.score)}
+                  tone="var(--colors-icon-semantic-red, #d64545)"
+                />
+              ) : (
+                <CardNote>
+                  One assessment on record, so there is no measured trajectory yet. Re-assess over time to build
+                  one.
+                </CardNote>
+              )}
+              {inputs.deterioration_basis && <CardNote>Basis: {inputs.deterioration_basis}.</CardNote>}
+            </Card>
+
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle icon={{ group: "time-date", name: "time" }}>
+                Time between corrective events
+                {a.dominant_issue_mtbf ? ` — ${a.dominant_issue_mtbf.issue_label}` : ""}
+              </CardTitle>
+              {domMtbf && domMtbf.length > 0 ? (
+                <MtbfBars gaps={domMtbf} verdict={domVerdict} />
+              ) : (
+                <CardNote>Not enough dated corrective events to measure an interval.</CardNote>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--spacing-container-xlarge)", flexWrap: "wrap" }}>
+                <CardNote>
+                  Mean <Val metric={a.mtbf?.mean_months} suffix=" months" fallbackLabel="n/a" /> across all
+                  corrective events
+                </CardNote>
+                <CardNote>
+                  MTTR <Val metric={a.mttr_hours} suffix=" h" fallbackLabel="not recorded" />
+                </CardNote>
+              </div>
+            </Card>
+          </Split>
+
+          <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+            <CardTitle icon={{ group: "time-date", name: "date-tick" }}>Lifecycle</CardTitle>
             <LifecycleBar
               age={ageMetric}
               expectedLife={Number(inputs.expected_life_years) || 15}
               purchasedYear={String(an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
             />
-            <table style={{ marginTop: 10 }}>
-              <tbody>
-                <tr>
-                  <td className="muted small">Expected service life</td>
-                  <td className="num">
-                    {inputs.expected_life_years}y{" "}
-                    {baselines && <Provenance source={baselines.source} confidence={baselines.confidence?.life} />}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="muted small">Criticality</td>
-                  <td className="num">
-                    {inputs.criticality}{" "}
-                    {baselines && (
-                      <Provenance source={baselines.source} confidence={baselines.confidence?.criticality} />
-                    )}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="muted small">Warranty</td>
-                  <td className="num">
-                    {a.warranty?.available ? (
-                      <Pill tone={a.warranty.value === "active" ? "good" : "mute"}>
-                        {a.warranty.value}
-                        {inputs.warranty_expiry ? ` ${inputs.warranty_expiry}` : ""}
-                      </Pill>
-                    ) : (
-                      <span className="muted">not recorded</span>
-                    )}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Cost basis</div>
-            <table>
-              <tbody>
-                <tr>
-                  <td className="muted small">Corrective spend, last 3 years</td>
-                  <td className="num">{inr(a.repair_spend)}</td>
-                </tr>
-                <tr>
-                  <td className="muted small">Estimated replacement</td>
-                  <td className="num">
-                    {inr(a.replacement_cost)}{" "}
-                    {baselines && (
-                      <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
-                    )}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="muted small">CAPEX priority</td>
-                  <td className="num">
-                    {a.capex_priority === "-" ? (
-                      <span className="muted">none</span>
-                    ) : (
-                      <Pill tone={a.capex_priority === "P1" ? "crit" : "bad"}>{a.capex_priority}</Pill>
-                    )}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="banner info" style={{ marginTop: 10 }}>
-              <span>
-                {ev?.cost_basis}. This Facilio org holds no work-order cost fields, so figures come from{" "}
-                <a href="#/settings">Settings</a> and improve automatically once costs are logged in Facilio.
-              </span>
-            </div>
-          </div>
-        </div>
+          </Card>
+        </>
       )}
 
-      {/* ---------- 7. why: every number traceable ---------- */}
-      {a && ev && (
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="card-title">Why — how each number was derived</div>
-          {ev.risk_terms && ev.risk_terms.length > 0 && (
-            <div className="tbl-wrap" style={{ marginBottom: 12 }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Risk term</th>
-                    <th className="num">Weight</th>
-                    <th className="num">Factor</th>
-                    <th className="num">Contribution</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ev.risk_terms.map((t) => (
-                    <tr key={t.name}>
-                      <td>{pretty(t.name)}</td>
-                      <td className="num">{t.weight}</td>
-                      <td className="num">{t.factor}</td>
-                      <td className="num" style={{ fontWeight: 650 }}>
-                        {t.contribution}
+      {/* ══════════════════════════════════════════════════════════ findings */}
+      {tab === "findings" && (
+        <>
+          {an && an.recurring_issues.length > 0 ? (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle icon={{ group: "webtabs", name: "inspection" }}>Recurring issues</CardTitle>
+              <CardNote>The recurrence unit is the corrective work order, never the photo.</CardNote>
+
+              {an.recurring_issues.map((i) => (
+                <div
+                  key={i.issue_id}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "var(--spacing-container-xlarge)",
+                    padding: "var(--spacing-container-xlarge)",
+                    borderRadius: "var(--border-medium)",
+                    border: "1px solid var(--colors-border-neutral-base-subtler)",
+                    backgroundColor: "var(--colors-background-container)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
+                    <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+                      {i.display_name}
+                    </FText>
+                    <StatusTag tone={statusTone(i.status)}>{pretty(i.status)}</StatusTag>
+                    <StatusTag tone={severityTone(i.severity.overall)}>{i.severity.overall} severity</StatusTag>
+                    <StatusTag tone={trendTone(i.trend)}>{pretty(i.trend)}</StatusTag>
+                    <span style={{ marginLeft: "auto" }}>
+                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                        confidence {i.confidence.toFixed(2)}
+                      </FText>
+                    </span>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "var(--spacing-section-small)", flexWrap: "wrap" }}>
+                    <span style={{ display: "inline-flex", alignItems: "baseline", gap: "var(--spacing-container-medium)" }}>
+                      <span style={{ font: "var(--text-heading-smb-20)", color: "var(--colors-text-main)" }}>
+                        {i.occurrence_count}
+                      </span>
+                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                        of {scope?.corrective_work_orders_analyzed} corrective WOs
+                      </FText>
+                    </span>
+                    <span style={{ display: "inline-flex", alignItems: "baseline", gap: "var(--spacing-container-medium)" }}>
+                      <span style={{ font: "var(--text-heading-med-16)", color: "var(--colors-text-main)" }}>
+                        {(i.occurrence_rate * 100).toFixed(0)}%
+                      </span>
+                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                        occurrence rate
+                      </FText>
+                    </span>
+                    {i.first_occurrence && (
+                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                        first {i.first_occurrence.date} · last {i.last_occurrence?.date}
+                      </FText>
+                    )}
+                  </div>
+
+                  <span
+                    style={{
+                      display: "block",
+                      height: 8,
+                      borderRadius: 999,
+                      backgroundColor: "var(--colors-background-midground-dark)",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <i
+                      style={{
+                        display: "block",
+                        height: "100%",
+                        width: `${Math.min(i.occurrence_rate * 100, 100)}%`,
+                        borderRadius: 999,
+                        backgroundColor: "var(--colors-icon-primary-default)",
+                      }}
+                    />
+                  </span>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-medium)", flexWrap: "wrap" }}>
+                    <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                      Components:
+                    </FText>
+                    {i.affected_components.map((c) => (
+                      <StatusTag tone="mute" key={c.component}>
+                        {pretty(c.component)} ×{c.occurrence_count}
+                      </StatusTag>
+                    ))}
+                  </div>
+
+                  <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-caption-reg-12)", color: "var(--colors-text-description)" }}>
+                    {i.evidence.map((e, k) => (
+                      <li key={k}>{e}</li>
+                    ))}
+                  </ul>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-medium)", flexWrap: "wrap" }}>
+                    <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                      Work orders:
+                    </FText>
+                    {i.work_order_references.map((w) => (
+                      <span
+                        key={w}
+                        style={{
+                          fontFamily: "var(--mono)",
+                          fontSize: 11,
+                          padding: "1px 6px",
+                          borderRadius: "var(--border-small)",
+                          border: "1px solid var(--colors-border-neutral-base-subtler)",
+                          color: "var(--colors-text-description)",
+                        }}
+                      >
+                        #{w}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </Card>
+          ) : (
+            <EmptyState
+              icon={{ group: "webtabs", name: "inspection" }}
+              title="No recurring issue identified"
+              description="Nothing repeated often enough across this asset's corrective work orders to be called recurring."
+            />
+          )}
+
+          <Split>
+            {an && an.component_analysis.length > 0 && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                <CardTitle icon={{ group: "setup", name: "customisation" }}>Component concentration</CardTitle>
+                <DataGrid
+                  head={
+                    <>
+                      <th style={TABLE_HEAD}>Component</th>
+                      <th style={TABLE_HEAD}>Corrective WOs</th>
+                      <th style={TABLE_HEAD}>Issues</th>
+                      <th style={TABLE_HEAD}>Worst severity</th>
+                    </>
+                  }
+                >
+                  {an.component_analysis.map((c) => (
+                    <tr key={c.component}>
+                      <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{pretty(c.component)}</td>
+                      <td style={TABLE_CELL}>{c.corrective_work_order_count}</td>
+                      <td style={TABLE_CELL}>{c.issue_count}</td>
+                      <td style={TABLE_CELL}>
+                        <StatusTag tone={severityTone(c.highest_severity)}>{c.highest_severity}</StatusTag>
                       </td>
                     </tr>
                   ))}
-                  <tr>
-                    <td colSpan={3} style={{ fontWeight: 650 }}>
-                      Risk score
-                    </td>
-                    <td className="num" style={{ fontWeight: 700 }}>
-                      {a.risk_score}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
-          {ev.risk_terms_excluded && ev.risk_terms_excluded.length > 0 && (
-            <div className="muted small" style={{ marginBottom: 10 }}>
-              Excluded and reweighted so the remaining terms still total 100:{" "}
-              {ev.risk_terms_excluded.join("; ")}.
-            </div>
-          )}
-          <div className="small muted mono" style={{ lineHeight: 1.9 }}>
-            {Object.entries(ev.formulas || {}).map(([k, v]) => (
-              <div key={k}>
-                {k}: {v}
-              </div>
-            ))}
-          </div>
+                </DataGrid>
+              </Card>
+            )}
 
-          <details className="sec" style={{ marginTop: 12 }}>
-            <summary>Work orders behind this assessment ({d.findings.length} findings)</summary>
-            <div className="tbl-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Work order</th>
-                    <th>Issue</th>
-                    <th>Component</th>
-                    <th>Severity</th>
-                    <th className="num">Conf.</th>
-                    <th>Source</th>
-                    <th>Evidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.findings.map((f, i) => (
-                    <tr key={i}>
-                      <td className="mono">#{f.wo_id}</td>
-                      <td style={{ fontWeight: 550 }}>{f.issue_label}</td>
-                      <td className="small">{pretty(f.component)}</td>
-                      <td>
-                        <Pill tone={severityTone(f.severity)}>{f.severity}</Pill>
-                      </td>
-                      <td className="num">{f.confidence.toFixed(2)}</td>
-                      <td>
-                        <Pill tone={f.source === "photo" ? "info" : "mute"}>
-                          {f.source === "photo" ? "photo" : "WO text"}
-                        </Pill>
-                      </td>
-                      <td className="small muted">{f.evidence[0] || "—"}</td>
+            {d.issue_matrix.years.length > 0 && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                <CardTitle icon={{ group: "time-date", name: "date-tick" }}>Occurrences per year</CardTitle>
+                <DataGrid
+                  minWidth={320}
+                  head={
+                    <>
+                      <th style={TABLE_HEAD}>Issue</th>
+                      {d.issue_matrix.years.map((y) => (
+                        <th key={y} style={{ ...TABLE_HEAD, textAlign: "center" }}>
+                          {y}
+                        </th>
+                      ))}
+                    </>
+                  }
+                >
+                  {d.issue_matrix.rows.map((r) => (
+                    <tr key={r.issue}>
+                      <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{r.label}</td>
+                      {r.counts.map((c, i) => (
+                        <td
+                          key={i}
+                          style={{
+                            ...TABLE_CELL,
+                            textAlign: "center",
+                            // Heat by count, capped at 3 — beyond that the shade stops carrying
+                            // information and only the number does.
+                            backgroundColor: c
+                              ? `color-mix(in srgb, var(--colors-icon-semantic-orange) ${Math.min(c, 3) * 14}%, transparent)`
+                              : undefined,
+                            color: c ? "var(--colors-text-main)" : "var(--colors-text-caption)",
+                          }}
+                        >
+                          {c || "·"}
+                        </td>
+                      ))}
                     </tr>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          </details>
-        </div>
+                </DataGrid>
+                {d.issue_matrix.years.length < 2 && (
+                  <CardNote>Only one calendar year of evidence, so no trend is claimed.</CardNote>
+                )}
+              </Card>
+            )}
+          </Split>
+        </>
       )}
 
-      {/* ---------- 8. evidence quality and gaps ---------- */}
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="card-title">Evidence and data quality</div>
-        <div className="grid g4">
-          <div className="kpi">
-            <div className="n">{scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0}</div>
-            <div className="l">Corrective work orders</div>
-          </div>
-          <div className="kpi">
-            <div className="n">{scope?.photos_analyzed ?? 0}</div>
-            <div className="l">Before photos analysed</div>
-          </div>
-          <div className="kpi">
-            <div className="n">{photoFindings.length}</div>
-            <div className="l">Photo-backed findings</div>
-          </div>
-          <div className="kpi">
-            <div className="n">{textFindings.length}</div>
-            <div className="l">Text-derived findings</div>
-          </div>
-        </div>
+      {/* ═════════════════════════════════════════════════════════ risk & cost */}
+      {tab === "risk" && a && (
+        <>
+          <Split>
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
+              <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>Risk</CardTitle>
+              <Row label="Risk score">
+                <StatusTag tone={riskTone(a.risk_level)}>
+                  {a.risk_score} / 100 · {a.risk_level}
+                </StatusTag>
+              </Row>
+              <Row label="Condition">
+                <>
+                  {a.score.toFixed(2)} / 5 <StatusTag tone={gradeTone(a.grade)}>{a.grade}</StatusTag>
+                </>
+              </Row>
+              <Row label="Remaining life">
+                <Val metric={a.rul} suffix=" years" fallbackLabel="unavailable" />
+              </Row>
+              <Row label="Deterioration" last>
+                <StatusTag
+                  tone={a.deterioration === "accelerating" ? "bad" : a.deterioration === "improving" ? "good" : "mute"}
+                >
+                  {pretty(a.deterioration)}
+                </StatusTag>
+              </Row>
+            </Card>
 
-        {a?.unavailable && a.unavailable.length > 0 && (
-          <div style={{ marginTop: 14 }}>
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
+              <CardTitle icon={{ group: "files", name: "document" }}>Cost basis</CardTitle>
+              <Row label="Corrective spend, last 3 years">{inr(a.repair_spend)}</Row>
+              <Row label="Estimated replacement">
+                <>
+                  {inr(a.replacement_cost)}
+                  {baselines && (
+                    <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
+                  )}
+                </>
+              </Row>
+              <Row label="CAPEX priority" last>
+                {a.capex_priority === "-" ? (
+                  <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
+                    none
+                  </FText>
+                ) : (
+                  <StatusTag tone={priorityTone(a.capex_priority)}>{a.capex_priority}</StatusTag>
+                )}
+              </Row>
+              <CardNote>
+                {ev?.cost_basis}. This Facilio org holds no work-order cost fields, so figures come from the
+                Baselines page and improve automatically once costs are logged in Facilio.
+              </CardNote>
+            </Card>
+          </Split>
+
+          {ev?.risk_terms && ev.risk_terms.length > 0 && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>How the risk score is built</CardTitle>
+              <DataGrid
+                head={
+                  <>
+                    <th style={TABLE_HEAD}>Risk term</th>
+                    <th style={TABLE_HEAD}>Weight</th>
+                    <th style={TABLE_HEAD}>Factor</th>
+                    <th style={TABLE_HEAD}>Contribution</th>
+                  </>
+                }
+              >
+                {ev.risk_terms.map((t) => (
+                  <tr key={t.name}>
+                    <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{pretty(t.name)}</td>
+                    <td style={TABLE_CELL}>{t.weight}</td>
+                    <td style={TABLE_CELL}>{t.factor}</td>
+                    <td style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)" }}>
+                      {t.contribution}
+                    </td>
+                  </tr>
+                ))}
+                <tr>
+                  <td colSpan={3} style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)", borderBottom: "none" }}>
+                    Risk score
+                  </td>
+                  <td style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)", borderBottom: "none" }}>
+                    {a.risk_score}
+                  </td>
+                </tr>
+              </DataGrid>
+              {ev.risk_terms_excluded && ev.risk_terms_excluded.length > 0 && (
+                <CardNote>
+                  Excluded and reweighted so the remaining terms still total 100: {ev.risk_terms_excluded.join("; ")}.
+                </CardNote>
+              )}
+            </Card>
+          )}
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════ evidence */}
+      {tab === "evidence" && (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "var(--spacing-container-xxlarge)",
+            }}
+          >
+            <Kpi
+              value={scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0}
+              label="Corrective work orders"
+            />
+            <Kpi value={scope?.photos_analyzed ?? 0} label="Before photos analysed" />
+            <Kpi value={photoFindings.length} label="Photo-backed findings" />
+            <Kpi value={textFindings.length} label="Text-derived findings" />
+          </div>
+
+          {a?.unavailable && a.unavailable.length > 0 && (
             <GapList items={a.unavailable} title="Could not be computed" />
-          </div>
-        )}
+          )}
 
-        {mismatches.length > 0 && (
-          <div className="banner info" style={{ marginTop: 12 }}>
-            <span>
-              <b>The engine corrected the photo agent's counts.</b>
-              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+            <CardTitle icon={{ group: "webtabs", name: "workorder" }}>
+              Work orders behind this assessment
+            </CardTitle>
+            {findings.length === 0 ? (
+              <CardNote>No findings recorded.</CardNote>
+            ) : (
+              <DataGrid
+                minWidth={720}
+                head={
+                  <>
+                    <th style={TABLE_HEAD}>Work order</th>
+                    <th style={TABLE_HEAD}>Issue</th>
+                    <th style={TABLE_HEAD}>Component</th>
+                    <th style={TABLE_HEAD}>Severity</th>
+                    <th style={TABLE_HEAD}>Conf.</th>
+                    <th style={TABLE_HEAD}>Source</th>
+                    <th style={TABLE_HEAD}>Evidence</th>
+                  </>
+                }
+              >
+                {findings.map((f, i) => (
+                  <tr key={i}>
+                    <td style={{ ...TABLE_CELL, fontFamily: "var(--mono)", fontSize: 12 }}>#{f.wo_id}</td>
+                    <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{f.issue_label}</td>
+                    <td style={TABLE_CELL}>{pretty(f.component)}</td>
+                    <td style={TABLE_CELL}>
+                      <StatusTag tone={severityTone(f.severity)}>{f.severity}</StatusTag>
+                    </td>
+                    <td style={TABLE_CELL}>{f.confidence.toFixed(2)}</td>
+                    <td style={TABLE_CELL}>
+                      <StatusTag tone={f.source === "photo" ? "info" : "mute"}>
+                        {f.source === "photo" ? "photo" : "WO text"}
+                      </StatusTag>
+                    </td>
+                    <td style={{ ...TABLE_CELL, font: "var(--text-caption-reg-12)" }}>{f.evidence[0] || "—"}</td>
+                  </tr>
+                ))}
+              </DataGrid>
+            )}
+          </Card>
+        </>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════ why */}
+      {tab === "why" && (
+        <>
+          {mismatches.length > 0 && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xlarge)" }}>
+              <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>
+                The engine corrected the photo agent's counts
+              </CardTitle>
+              <CardNote>
+                Every count is recomputed from distinct work orders, so the agent's own arithmetic never reaches
+                the record.
+              </CardNote>
+              <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-body-reg-14)", color: "var(--colors-text-description)" }}>
                 {mismatches.map((m, i) => (
                   <li key={i}>{m}</li>
                 ))}
               </ul>
-            </span>
-          </div>
-        )}
+            </Card>
+          )}
 
-        {lock && !lock.accepted && (
-          <div className="banner warn" style={{ marginTop: 12 }}>
-            <span>
+          {lock && !lock.accepted && (
+            <ErrorBanner>
               The written explanation was rejected because it contained figures absent from its input:{" "}
               {lock.unseen_figures.join(", ")}.
-            </span>
-          </div>
-        )}
-      </div>
-    </>
+            </ErrorBanner>
+          )}
+
+          {ev?.formulas && Object.keys(ev.formulas).length > 0 && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle icon={{ group: "action", name: "info" }}>How each number was derived</CardTitle>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "var(--spacing-container-large)",
+                  padding: "var(--spacing-container-xlarge)",
+                  borderRadius: "var(--border-medium)",
+                  border: "1px solid var(--colors-border-neutral-base-subtler)",
+                  backgroundColor: "var(--colors-background-container)",
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                  lineHeight: 1.7,
+                  color: "var(--colors-text-description)",
+                  overflowX: "auto",
+                }}
+              >
+                {Object.entries(ev.formulas).map(([k, v]) => (
+                  <span key={k}>
+                    {k}: {v}
+                  </span>
+                ))}
+              </div>
+              <CardNote>
+                The agent reads photographs, judges severity and writes the prose. Every figure above is computed
+                in TypeScript against SQL, and overwrites whatever the agent returned.
+              </CardNote>
+            </Card>
+          )}
+
+          {a?.unavailable && a.unavailable.length > 0 && (
+            <GapList items={a.unavailable} title="What the evidence could not support" />
+          )}
+        </>
+      )}
+    </DetailShell>
   );
 }

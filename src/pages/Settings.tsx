@@ -1,15 +1,24 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { FButton, FText } from "@facilio/dsm-react-wrapper";
 import { fn, inr, runAgent } from "../lib/vibe";
 import type { BaselineRow } from "../lib/types";
-import { Empty, Pill, Provenance } from "../lib/ui";
+import { Empty, ErrorBanner, Provenance } from "../lib/ui";
+import { PageShell } from "../components/PageShell";
+import { Card, CardTitle } from "../components/Card";
+import { StatusTag } from "../components/StatusTag";
+import { EmptyState } from "../components/EmptyState";
 
 /**
  * Baselines review — not data entry.
  *
- * Facilio holds no field for expected life, criticality, repair cost or replacement
- * cost, so the asset-baseline agent estimates them per category. This page shows what
- * it produced, on what basis, and how confident it is, and lets a human override any
- * field. Real costs from Facilio supersede both automatically.
+ * Facilio holds no field for expected life, criticality, repair cost or replacement cost, so the
+ * asset-baseline agent estimates them per category. This page shows what it produced, on what
+ * basis, and how confident it is, and lets a human override any field. Real costs from Facilio
+ * supersede both automatically.
+ *
+ * Laid out on {@link PageShell} rather than the list archetype: there are only ever a handful of
+ * categories, and each one is a block of prose-plus-numbers to read, not a row to scan.
  */
 export function Settings() {
   const [rows, setRows] = useState<BaselineRow[] | null>(null);
@@ -86,201 +95,282 @@ export function Settings() {
     }
   }
 
-  if (error && !rows) return <div className="banner bad">Could not load settings: {error}</div>;
+  if (error && !rows) {
+    return (
+      <PageShell title="Baselines">
+        <ErrorBanner>Could not load baselines: {error}</ErrorBanner>
+      </PageShell>
+    );
+  }
   if (!rows) return <Empty>Loading baselines…</Empty>;
 
   const missing = categories.filter((c) => rows.every((r) => r.category !== c));
 
   return (
-    <>
-      <div className="row spread" style={{ marginBottom: 14 }}>
-        <div>
-          <h1 style={{ marginBottom: 4 }}>Baselines</h1>
-          <div className="muted small">
-            Expected life, criticality and cost per asset category — the four values Facilio has no field for.
-          </div>
-        </div>
-        {missing.length > 0 && (
-          <button className="btn primary" disabled={!!busy} onClick={estimateMissing}>
+    <PageShell
+      title="Baselines"
+      subtitle="Expected life, criticality and cost per asset category — the four values Facilio has no field for."
+      action={
+        missing.length > 0 ? (
+          <FButton appearance="primary" size="medium" disabled={!!busy} onButtonClick={estimateMissing}>
             {busy ? `Estimating ${busy}…` : `Estimate ${missing.length} missing`}
-          </button>
-        )}
-      </div>
+          </FButton>
+        ) : undefined
+      }
+    >
+      <Card>
+        <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
+          Nothing here needs filling in. These are AI-estimated reference values, each with its basis
+          and a confidence score. Cost figures are deliberately low-confidence because no rate card is
+          available — real costs logged in Facilio replace them automatically, and a manual override
+          beats both.
+        </FText>
+      </Card>
 
-      <div className="banner info" style={{ marginBottom: 14 }}>
-        <span>
-          Nothing here needs filling in. These are AI-estimated reference values, each with its basis and a confidence
-          score. Cost figures are deliberately low-confidence because no rate card is available — real costs logged in
-          Facilio replace them automatically, and a manual override beats both.
-        </span>
-      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
 
-      {error && (
-        <div className="banner bad" style={{ marginBottom: 14 }}>
-          {error}
-        </div>
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={{ group: "setup", name: "customisation" }}
+          title="No baselines estimated yet"
+          description={
+            missing.length > 0
+              ? `${missing.length} asset ${missing.length === 1 ? "category" : "categories"} are waiting for an estimate.`
+              : "Assess an asset first — categories appear here once there is something to baseline."
+          }
+        />
+      ) : (
+        rows.map((r) => {
+          const lowCost = r.confidence.repair < 0.6 || r.confidence.replacement < 0.6;
+          const isEditing = editing === r.category;
+
+          return (
+            <Card key={r.category} style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle
+                action={
+                  <div style={{ display: "flex", gap: "var(--spacing-container-large)", flexShrink: 0 }}>
+                    {isEditing ? (
+                      <>
+                        <FButton
+                          appearance="primary"
+                          size="medium"
+                          disabled={!!busy}
+                          onButtonClick={() => saveOverride(r.category)}
+                        >
+                          {busy === r.category ? "Saving…" : "Save override"}
+                        </FButton>
+                        <FButton
+                          appearance="secondary"
+                          size="medium"
+                          onButtonClick={() => {
+                            setEditing(null);
+                            setDraft({});
+                          }}
+                        >
+                          Cancel
+                        </FButton>
+                      </>
+                    ) : (
+                      <>
+                        <FButton
+                          appearance="secondary"
+                          size="medium"
+                          onButtonClick={() => {
+                            setEditing(r.category);
+                            setDraft(r);
+                          }}
+                        >
+                          Override
+                        </FButton>
+                        <FButton
+                          appearance="secondary"
+                          size="medium"
+                          disabled={!!busy}
+                          onButtonClick={() => estimate(r.category, true)}
+                        >
+                          {busy === r.category ? "Estimating…" : "Re-estimate"}
+                        </FButton>
+                      </>
+                    )}
+                  </div>
+                }
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "var(--spacing-container-large)",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {r.category}
+                  <Provenance source={r.source} />
+                  {r.source === "override" && <StatusTag tone="good">manually set</StatusTag>}
+                  {lowCost && r.source === "ai_estimate" && (
+                    <StatusTag tone="warn">cost figures are indicative</StatusTag>
+                  )}
+                </span>
+              </CardTitle>
+
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  borderRadius: "var(--border-medium)",
+                  border: "1px solid var(--colors-border-neutral-base-subtler)",
+                  backgroundColor: "var(--colors-background-container)",
+                  overflow: "hidden",
+                }}
+              >
+                <Field
+                  label="Expected service life"
+                  value={`${r.expected_life_years} years`}
+                  confidence={r.confidence.life}
+                  source={r.source}
+                  basis={r.basis.expected_life_years}
+                  assumptions={r.assumptions.expected_life_years}
+                  editing={isEditing}
+                  input={
+                    <NumberInput
+                      value={draft.expected_life_years ?? r.expected_life_years}
+                      width={90}
+                      onChange={(v) => setDraft({ ...draft, expected_life_years: v })}
+                    />
+                  }
+                />
+                <Field
+                  label="Criticality"
+                  value={r.criticality}
+                  confidence={r.confidence.criticality}
+                  source={r.source}
+                  basis={r.basis.criticality}
+                  assumptions={r.assumptions.criticality}
+                  editing={isEditing}
+                  input={
+                    <select
+                      className="ca-input"
+                      value={String(draft.criticality ?? r.criticality)}
+                      onChange={(e) => setDraft({ ...draft, criticality: e.target.value })}
+                      style={FIELD_INPUT_STYLE}
+                    >
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  }
+                />
+                <Field
+                  label="Average repair cost"
+                  value={inr(r.avg_repair_cost)}
+                  confidence={r.confidence.repair}
+                  source={r.source}
+                  basis={r.basis.avg_repair_cost}
+                  assumptions={r.assumptions.avg_repair_cost}
+                  editing={isEditing}
+                  input={
+                    <NumberInput
+                      value={draft.avg_repair_cost ?? r.avg_repair_cost}
+                      width={130}
+                      onChange={(v) => setDraft({ ...draft, avg_repair_cost: v })}
+                    />
+                  }
+                />
+                <Field
+                  label="Replacement cost"
+                  value={inr(r.replacement_cost)}
+                  confidence={r.confidence.replacement}
+                  source={r.source}
+                  basis={r.basis.replacement_cost}
+                  assumptions={r.assumptions.replacement_cost}
+                  extra={
+                    typeof r.basis.capacity_inferred === "string" && r.basis.capacity_inferred
+                      ? `capacity inferred from the model: ${r.basis.capacity_inferred}`
+                      : ""
+                  }
+                  editing={isEditing}
+                  last
+                  input={
+                    <NumberInput
+                      value={draft.replacement_cost ?? r.replacement_cost}
+                      width={150}
+                      onChange={(v) => setDraft({ ...draft, replacement_cost: v })}
+                    />
+                  }
+                />
+              </div>
+
+              {r.estimated_at && (
+                <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
+                  {r.source === "override" ? "Overridden" : "Estimated"} {r.estimated_at.slice(0, 10)}. Changes
+                  apply on the next assessment.
+                </FText>
+              )}
+            </Card>
+          );
+        })
       )}
 
-      {rows.length === 0 && (
-        <div className="card">
-          <p style={{ marginTop: 0 }}>
-            No baselines estimated yet. {missing.length > 0 ? "Use the button above to generate them." : ""}
-          </p>
+      <Card>
+        <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>How these are used</CardTitle>
+        <div
+          style={{
+            marginTop: "var(--spacing-container-xlarge)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--spacing-container-large)",
+            fontFamily: "var(--mono)",
+            fontSize: 12,
+            lineHeight: 1.6,
+            color: "var(--colors-text-caption)",
+          }}
+        >
+          <span>RUL = max(expected_life − age, 0) × condition factor × (accelerating ? 0.7 : 1)</span>
+          <span>risk includes 20 parts criticality, reweighted when a term is unavailable</span>
+          <span>repair spend = corrective WOs in the last 3 years × average repair cost</span>
+          <span>an in-warranty asset is never recommended for replacement</span>
         </div>
-      )}
-
-      {rows.map((r) => {
-        const lowCost = r.confidence.repair < 0.6 || r.confidence.replacement < 0.6;
-        const isEditing = editing === r.category;
-        return (
-          <div className="card" key={r.category}>
-            <div className="row spread" style={{ marginBottom: 10 }}>
-              <div className="row">
-                <span style={{ fontSize: 16, fontWeight: 650 }}>{r.category}</span>
-                <Provenance source={r.source} />
-                {r.source === "override" && <Pill tone="good">manually set</Pill>}
-                {lowCost && r.source === "ai_estimate" && <Pill tone="warn">cost figures are indicative</Pill>}
-              </div>
-              <div className="row">
-                {!isEditing && (
-                  <>
-                    <button
-                      className="btn sm"
-                      onClick={() => {
-                        setEditing(r.category);
-                        setDraft(r);
-                      }}
-                    >
-                      Override
-                    </button>
-                    <button className="btn sm" disabled={!!busy} onClick={() => estimate(r.category, true)}>
-                      {busy === r.category ? "Estimating…" : "Re-estimate"}
-                    </button>
-                  </>
-                )}
-                {isEditing && (
-                  <>
-                    <button className="btn sm primary" disabled={!!busy} onClick={() => saveOverride(r.category)}>
-                      {busy === r.category ? "Saving…" : "Save override"}
-                    </button>
-                    <button
-                      className="btn sm"
-                      onClick={() => {
-                        setEditing(null);
-                        setDraft({});
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="tbl-wrap">
-              <table>
-                <tbody>
-                  <Field
-                    label="Expected service life"
-                    value={`${r.expected_life_years} years`}
-                    confidence={r.confidence.life}
-                    source={r.source}
-                    basis={r.basis.expected_life_years}
-                    assumptions={r.assumptions.expected_life_years}
-                    editing={isEditing}
-                    input={
-                      <input
-                        type="number"
-                        value={String(draft.expected_life_years ?? r.expected_life_years)}
-                        onChange={(e) => setDraft({ ...draft, expected_life_years: Number(e.target.value) })}
-                        style={{ width: 90, textAlign: "right" }}
-                      />
-                    }
-                  />
-                  <Field
-                    label="Criticality"
-                    value={r.criticality}
-                    confidence={r.confidence.criticality}
-                    source={r.source}
-                    basis={r.basis.criticality}
-                    assumptions={r.assumptions.criticality}
-                    editing={isEditing}
-                    input={
-                      <select
-                        value={String(draft.criticality ?? r.criticality)}
-                        onChange={(e) => setDraft({ ...draft, criticality: e.target.value })}
-                      >
-                        <option value="low">low</option>
-                        <option value="medium">medium</option>
-                        <option value="high">high</option>
-                      </select>
-                    }
-                  />
-                  <Field
-                    label="Average repair cost"
-                    value={inr(r.avg_repair_cost)}
-                    confidence={r.confidence.repair}
-                    source={r.source}
-                    basis={r.basis.avg_repair_cost}
-                    assumptions={r.assumptions.avg_repair_cost}
-                    editing={isEditing}
-                    input={
-                      <input
-                        type="number"
-                        value={String(draft.avg_repair_cost ?? r.avg_repair_cost)}
-                        onChange={(e) => setDraft({ ...draft, avg_repair_cost: Number(e.target.value) })}
-                        style={{ width: 130, textAlign: "right" }}
-                      />
-                    }
-                  />
-                  <Field
-                    label="Replacement cost"
-                    value={inr(r.replacement_cost)}
-                    confidence={r.confidence.replacement}
-                    source={r.source}
-                    basis={r.basis.replacement_cost}
-                    assumptions={r.assumptions.replacement_cost}
-                    extra={
-                      typeof r.basis.capacity_inferred === "string" && r.basis.capacity_inferred
-                        ? `capacity inferred from the model: ${r.basis.capacity_inferred}`
-                        : ""
-                    }
-                    editing={isEditing}
-                    input={
-                      <input
-                        type="number"
-                        value={String(draft.replacement_cost ?? r.replacement_cost)}
-                        onChange={(e) => setDraft({ ...draft, replacement_cost: Number(e.target.value) })}
-                        style={{ width: 150, textAlign: "right" }}
-                      />
-                    }
-                  />
-                </tbody>
-              </table>
-            </div>
-            {r.estimated_at && (
-              <div className="muted small" style={{ marginTop: 8 }}>
-                {r.source === "override" ? "Overridden" : "Estimated"} {r.estimated_at.slice(0, 10)}. Changes apply on
-                the next assessment.
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      <div className="card">
-        <div className="card-title">How these are used</div>
-        <div className="small muted mono" style={{ lineHeight: 1.9 }}>
-          <div>RUL = max(expected_life − age, 0) × condition factor × (accelerating ? 0.7 : 1)</div>
-          <div>risk includes 20 parts criticality, reweighted when a term is unavailable</div>
-          <div>repair spend = corrective WOs in the last 3 years × average repair cost</div>
-          <div>an in-warranty asset is never recommended for replacement</div>
-        </div>
-      </div>
-    </>
+      </Card>
+    </PageShell>
   );
 }
 
+const FIELD_INPUT_STYLE: React.CSSProperties = {
+  height: 32,
+  padding: "0 var(--spacing-container-large)",
+  borderRadius: "var(--border-medium)",
+  border: "1px solid var(--colors-border-neutral-base-subtle)",
+  backgroundColor: "var(--colors-background-container)",
+  color: "var(--colors-text-main)",
+  font: "var(--text-body-reg-14)",
+  textAlign: "right",
+  minWidth: 0,
+};
+
+function NumberInput({
+  value,
+  width,
+  onChange,
+}: {
+  value: number;
+  width: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <input
+      className="ca-input"
+      type="number"
+      value={String(value)}
+      onChange={(e) => onChange(Number(e.target.value))}
+      style={{ ...FIELD_INPUT_STYLE, width }}
+    />
+  );
+}
+
+/**
+ * One baseline value: what it is and what it was reasoned from on the left, the figure on the
+ * right, and how it was arrived at beside it. Rows are divided rather than spaced, so four of them
+ * read as one table without needing a `<table>`.
+ */
 function Field({
   label,
   value,
@@ -291,6 +381,7 @@ function Field({
   extra,
   editing,
   input,
+  last = false,
 }: {
   label: string;
   value: string;
@@ -300,35 +391,61 @@ function Field({
   assumptions?: string[];
   extra?: string;
   editing?: boolean;
-  input?: React.ReactNode;
+  input?: ReactNode;
+  last?: boolean;
 }) {
   const basisList = Array.isArray(basis) ? basis : basis ? [basis] : [];
+
   return (
-    <tr>
-      <td style={{ width: 190 }}>
-        <div style={{ fontWeight: 550 }}>{label}</div>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: "var(--spacing-container-xlarge)",
+        padding: "var(--spacing-container-xlarge)",
+        borderBottom: last ? "none" : "1px solid var(--colors-border-neutral-base-subtler)",
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+        <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+          {label}
+        </FText>
         {basisList.length > 0 && (
-          <div className="muted small" style={{ marginTop: 3 }}>
+          <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
             {basisList.join(" · ")}
-          </div>
+          </FText>
         )}
         {assumptions && assumptions.length > 0 && (
-          <div className="muted small" style={{ marginTop: 2, fontStyle: "italic" }}>
+          <span
+            style={{
+              font: "var(--text-caption-reg-12)",
+              color: "var(--colors-text-caption)",
+              fontStyle: "italic",
+            }}
+          >
             assumes {assumptions.join("; ")}
-          </div>
+          </span>
         )}
         {extra && (
-          <div className="muted small" style={{ marginTop: 2 }}>
+          <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
             {extra}
-          </div>
+          </FText>
         )}
-      </td>
-      <td className="num" style={{ verticalAlign: "top", whiteSpace: "nowrap" }}>
-        {editing && input ? input : <span style={{ fontWeight: 650 }}>{value}</span>}
-      </td>
-      <td style={{ verticalAlign: "top", width: 1 }}>
+      </div>
+
+      <div style={{ flexShrink: 0, textAlign: "right" }}>
+        {editing && input ? (
+          input
+        ) : (
+          <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+            {value}
+          </FText>
+        )}
+      </div>
+
+      <div style={{ flexShrink: 0, paddingTop: 2 }}>
         <Provenance source={source} confidence={confidence} />
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 }

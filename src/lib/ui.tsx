@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import type { Metric, MtbfGap, Severity, Unavailable } from "./types";
+import { FText } from "@facilio/dsm-react-wrapper";
+import type { Metric, MtbfGap, Unavailable } from "./types";
 
 /** Hash-based routing so deep links survive a refresh on static hosting. */
 export function useRoute(): { path: string; navigate: (to: string) => void } {
@@ -12,35 +13,6 @@ export function useRoute(): { path: string; navigate: (to: string) => void } {
   };
 }
 
-export function Pill({ tone, children }: { tone: string; children: ReactNode }) {
-  return <span className={`pill ${tone}`}>{children}</span>;
-}
-
-export function severityTone(s: Severity | string): string {
-  return s === "critical" ? "crit" : s === "high" ? "bad" : s === "medium" ? "warn" : s === "low" ? "good" : "mute";
-}
-
-export function riskTone(level: string): string {
-  const l = String(level).toLowerCase();
-  return l === "critical" ? "crit" : l === "high" ? "bad" : l === "medium" ? "warn" : l === "low" ? "good" : "mute";
-}
-
-export function gradeTone(grade: string): string {
-  return grade === "CRITICAL" ? "crit" : grade === "POOR" ? "bad" : grade === "AVERAGE" ? "warn" : "good";
-}
-
-export function recommendationTone(r: string): string {
-  return r === "REPLACE" ? "crit" : r === "REFURBISH" ? "bad" : r === "REPAIR" ? "warn" : "good";
-}
-
-export function statusTone(s: string): string {
-  return s === "highly_recurring" ? "bad" : s === "recurring" ? "warn" : s === "isolated" ? "info" : "mute";
-}
-
-export function trendTone(t: string): string {
-  return t === "increasing" ? "bad" : t === "decreasing" ? "good" : t === "insufficient_evidence" ? "mute" : "warn";
-}
-
 export function pretty(s: string): string {
   return String(s || "")
     .replace(/_/g, " ")
@@ -48,8 +20,20 @@ export function pretty(s: string): string {
 }
 
 /** Small inline sparkline — avoids pulling in a charting dependency. */
-export function Spark({ values, tone = "var(--accent)" }: { values: number[]; tone?: string }) {
-  if (values.length < 2) return <div className="muted small">Not enough history to plot.</div>;
+export function Spark({
+  values,
+  tone = "var(--colors-icon-primary-default)",
+}: {
+  values: number[];
+  tone?: string;
+}) {
+  if (values.length < 2) {
+    return (
+      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+        Not enough history to plot.
+      </FText>
+    );
+  }
   const w = 240;
   const h = 46;
   const pad = 4;
@@ -62,7 +46,13 @@ export function Spark({ values, tone = "var(--accent)" }: { values: number[]; to
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   return (
-    <svg className="spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="trend">
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="trend"
+      style={{ width: "100%", height: 46, display: "block" }}
+    >
       <polyline points={pts.join(" ")} fill="none" stroke={tone} strokeWidth="2" strokeLinejoin="round" />
       {pts.map((p, i) => {
         const [x, y] = p.split(",");
@@ -70,10 +60,6 @@ export function Spark({ values, tone = "var(--accent)" }: { values: number[]; to
       })}
     </svg>
   );
-}
-
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="center">{children}</div>;
 }
 
 /* ------------------------------------------------------------------ *
@@ -93,7 +79,7 @@ export function Val({
 }) {
   if (!metric || !metric.available || metric.value === null) {
     return (
-      <span className="muted" title={metric?.reason || ""}>
+      <span style={{ color: "var(--colors-text-caption)" }} title={metric?.reason || ""}>
         {fallbackLabel}
       </span>
     );
@@ -110,12 +96,31 @@ export function Val({
 export function GapList({ items, title = "Not available" }: { items?: Unavailable[]; title?: string }) {
   if (!items || items.length === 0) return null;
   return (
-    <div className="gaps">
-      <div className="gaps-title">{title}</div>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--spacing-container-large)",
+        padding: "var(--spacing-container-xlarge)",
+        borderRadius: "var(--border-medium)",
+        border: "1px dashed var(--colors-border-neutral-base-subtle)",
+        backgroundColor: "var(--colors-background-midground-subtle)",
+      }}
+    >
+      <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+        {title}
+      </FText>
       {items.map((u, i) => (
-        <div className="gap" key={i}>
-          <span className="gap-metric">{u.metric}</span>
-          <span className="gap-reason">{u.reason}</span>
+        <div
+          key={i}
+          style={{ display: "flex", gap: "var(--spacing-container-large)", flexWrap: "wrap", minWidth: 0 }}
+        >
+          <FText appearance="bodyReg14" styleProps={{ color: "textMain" }}>
+            {u.metric}
+          </FText>
+          <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
+            {u.reason}
+          </FText>
         </div>
       ))}
     </div>
@@ -135,10 +140,31 @@ export function Provenance({ source, confidence }: { source?: string; confidence
       ? "fallback"
       : "AI estimate";
   const low = typeof confidence === "number" && confidence > 0 && confidence < 0.6;
+  const ink =
+    source === "actuals"
+      ? "var(--colors-icon-semantic-green)"
+      : low
+      ? "var(--colors-icon-semantic-orange)"
+      : "var(--colors-text-caption)";
+
   return (
-    <span className={`prov ${source === "actuals" ? "good" : low ? "warn" : "mute"}`} title={
-      typeof confidence === "number" && confidence > 0 ? `confidence ${confidence.toFixed(2)}` : label
-    }>
+    <span
+      title={
+        typeof confidence === "number" && confidence > 0 ? `confidence ${confidence.toFixed(2)}` : label
+      }
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "1px 6px",
+        borderRadius: "var(--border-small)",
+        border: "1px solid var(--colors-border-neutral-base-subtler)",
+        backgroundColor: "var(--colors-background-container)",
+        font: "var(--text-caption-reg-12)",
+        color: ink,
+        whiteSpace: "nowrap",
+      }}
+    >
       {label}
       {typeof confidence === "number" && confidence > 0 ? ` ${confidence.toFixed(2)}` : ""}
       {low ? " ⚠" : ""}
@@ -153,27 +179,72 @@ export function Provenance({ source, confidence }: { source?: string; confidence
 export function MtbfBars({ gaps, verdict }: { gaps: MtbfGap[]; verdict?: string | null }) {
   if (!gaps.length) return null;
   const max = Math.max(...gaps.map((g) => g.months), 1);
+  const verdictInk =
+    verdict === "contracting"
+      ? "var(--colors-icon-semantic-red, #d64545)"
+      : verdict === "lengthening"
+      ? "var(--colors-icon-semantic-green)"
+      : "var(--colors-text-caption)";
+
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
       {gaps.map((g, i) => (
-        <div className="mtbf-row" key={i}>
-          <span className="mtbf-dates">
+        <div
+          key={i}
+          style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-xlarge)" }}
+        >
+          <span
+            style={{
+              width: 140,
+              flexShrink: 0,
+              font: "var(--text-caption-reg-12)",
+              color: "var(--colors-text-caption)",
+              whiteSpace: "nowrap",
+            }}
+          >
             {g.from} → {g.to}
           </span>
-          <span className="mtbf-bar">
-            <i style={{ width: `${Math.max((g.months / max) * 100, 3)}%` }} />
+          <span
+            style={{
+              flex: 1,
+              height: 8,
+              minWidth: 40,
+              borderRadius: 999,
+              backgroundColor: "var(--colors-background-midground-dark)",
+              overflow: "hidden",
+            }}
+          >
+            <i
+              style={{
+                display: "block",
+                height: "100%",
+                width: `${Math.max((g.months / max) * 100, 3)}%`,
+                borderRadius: 999,
+                backgroundColor: "var(--colors-icon-primary-default)",
+              }}
+            />
           </span>
-          <span className="mtbf-months">{g.months} mo</span>
+          <span
+            style={{
+              width: 56,
+              flexShrink: 0,
+              textAlign: "right",
+              font: "var(--text-caption-reg-12)",
+              color: "var(--colors-text-description)",
+            }}
+          >
+            {g.months} mo
+          </span>
         </div>
       ))}
       {verdict && (
-        <div className={`mtbf-verdict ${verdict === "contracting" ? "bad" : verdict === "lengthening" ? "good" : "mute"}`}>
+        <span style={{ font: "var(--text-caption-reg-12)", color: verdictInk }}>
           {verdict === "contracting"
             ? "Contracting — corrective events are arriving faster"
             : verdict === "lengthening"
             ? "Lengthening — corrective events are arriving less often"
             : "Steady — no clear change in interval"}
-        </div>
+        </span>
       )}
     </div>
   );
@@ -190,20 +261,45 @@ export function LifecycleBar({
   purchasedYear?: string;
 }) {
   if (!age || !age.available || age.value === null) {
-    return <div className="muted small">Age unavailable — {age?.reason || "no purchase date recorded"}.</div>;
+    return (
+      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+        Age unavailable — {age?.reason || "no purchase date recorded"}.
+      </FText>
+    );
   }
   const pct = clampPct((age.value / Math.max(expectedLife, 1)) * 100);
   const over = age.value > expectedLife;
+
   return (
-    <div>
-      <div className="life-bar">
-        <i className={over ? "over" : ""} style={{ width: `${pct}%` }} />
-      </div>
-      <div className="row spread small muted">
-        <span>{purchasedYear ? `in service ${purchasedYear}` : "in service"}</span>
-        <span>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
+      <span
+        style={{
+          display: "block",
+          height: 10,
+          borderRadius: 999,
+          backgroundColor: "var(--colors-background-midground-dark)",
+          overflow: "hidden",
+        }}
+      >
+        <i
+          style={{
+            display: "block",
+            height: "100%",
+            width: `${pct}%`,
+            borderRadius: 999,
+            backgroundColor: over
+              ? "var(--colors-icon-semantic-red, #d64545)"
+              : "var(--colors-icon-primary-default)",
+          }}
+        />
+      </span>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--spacing-container-large)" }}>
+        <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+          {purchasedYear ? `in service ${purchasedYear}` : "in service"}
+        </FText>
+        <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
           {age.value}y of {expectedLife}y {over ? "· past expected life" : ""}
-        </span>
+        </FText>
       </div>
     </div>
   );
@@ -211,4 +307,44 @@ export function LifecycleBar({
 
 function clampPct(v: number): number {
   return v < 2 ? 2 : v > 100 ? 100 : v;
+}
+
+/** Centred single-line state, used while a page's only fetch is in flight. */
+export function Empty({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "var(--spacing-section-medium)",
+      }}
+    >
+      <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
+        {children}
+      </FText>
+    </div>
+  );
+}
+
+/** Inline error strip. Full-bleed inside whatever band it is dropped into. */
+export function ErrorBanner({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "var(--spacing-container-large)",
+        padding: "var(--spacing-container-xlarge)",
+        borderRadius: "var(--border-medium)",
+        border: "1px solid var(--colors-border-neutral-base-subtle)",
+        backgroundColor: "var(--colors-background-midground-subtle)",
+      }}
+    >
+      <FText appearance="bodyReg14" styleProps={{ color: "textMain", display: "block" }}>
+        {children}
+      </FText>
+    </div>
+  );
 }
