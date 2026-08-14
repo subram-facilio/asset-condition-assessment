@@ -12,6 +12,18 @@ export async function action<T = any>(actionSlug: string, payload: Record<string
   return (await vibe.executeAction("facilio-cmms", actionSlug, payload)) as T;
 }
 
+/**
+ * Call the org's "Facilio CMMS Files" companion connection (custom, org 2920).
+ * Same CMMS upstream as `action`, but its actions are saved with
+ * output_config {kind:"file", mode:"base64"}: the file arrives base64-encoded
+ * inside the JSON response, through the app's own origin. This is the only
+ * file route a browser can read — the main connection's mode is "signed_url",
+ * and that S3 host sends no CORS header, so its URLs display but never fetch.
+ */
+export async function fileAction<T = any>(actionSlug: string, payload: Record<string, unknown> = {}): Promise<T> {
+  return (await vibe.executeAction("facilio-cmms-files", actionSlug, payload)) as T;
+}
+
 export type AgentName = "photo-validation" | "asset-baseline" | "condition-assessment";
 
 /**

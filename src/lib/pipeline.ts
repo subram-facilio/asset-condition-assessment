@@ -9,7 +9,7 @@
  * RULE: all of one work order's before photos go into ONE agent run, so three
  * photos of the same leak in one work order cannot become three occurrences.
  */
-import { fn, runAgent, vibe } from "./vibe";
+import { fileAction, fn, runAgent, vibe } from "./vibe";
 import type { Analysis, Assessment, Bundle, GatheredWo } from "./types";
 
 export type StageState = "pending" | "running" | "done" | "skipped" | "failed";
@@ -604,8 +604,35 @@ async function loadPhotos(
       if (alreadyDone.has(p.attachment_id)) continue;
 
       let blob: Blob | null = null;
+      let inlineErr = "";
 
-      if (p.signed_url) {
+      // Primary: the facilio-cmms-files companion action returns the photo
+      // base64-encoded inside JSON, via the app's own origin — no cross-origin
+      // read ever happens, so this works where the signed-URL fetch below
+      // usually cannot.
+      try {
+        const res = await fileAction<{ file_base64?: string; content_type?: string }>(
+          "download-work-order-attachment",
+          { work_order_id: wo.wo_id, attachment_id: p.attachment_id }
+        );
+        if (res?.file_base64) {
+          const bin = atob(res.file_base64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          blob = new Blob([bytes], { type: res.content_type || p.content_type || "image/jpeg" });
+        } else {
+          // 2xx but no file channel — the platform reports action errors this way too.
+          inlineErr = `no file_base64 in response: ${JSON.stringify(res ?? null).slice(0, 200)}`;
+        }
+      } catch (e) {
+        // VibeError carries the runtime's status + body — keep it for the step detail.
+        inlineErr = e instanceof Error ? e.message : String(e);
+      }
+
+      // Fallback: fetch the pre-signed URL directly. Fails in browsers unless
+      // the storage host starts sending CORS headers; kept so the app heals
+      // itself the day that policy lands.
+      if (!blob && p.signed_url) {
         try {
           const r = await fetch(p.signed_url);
           if (r.ok) blob = await r.blob();
@@ -616,9 +643,10 @@ async function loadPhotos(
 
       if (!blob) {
         failed++;
-        lastReason =
-          lastReason ||
-          "Facilio's pre-signed attachment URLs are not readable from a browser — the storage host sends no cross-origin permission, so the photo bytes never reach the app";
+        lastReason = inlineErr
+          ? `inline download failed — ${inlineErr}`
+          : lastReason ||
+            "Photo bytes unreachable: the facilio-cmms-files inline download failed and the pre-signed URL is not readable from a browser (no cross-origin permission)";
         continue;
       }
 
