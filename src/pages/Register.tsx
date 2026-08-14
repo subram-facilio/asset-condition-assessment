@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
-import { fn, inr } from "../lib/vibe";
+import { fn, usd } from "../lib/vibe";
 import type { Assessment } from "../lib/types";
 import { Empty, ErrorBanner, pretty, useRoute } from "../lib/ui";
 import PageHeader from "../components/PageHeader";
@@ -204,7 +204,7 @@ export function Register() {
       {
         key: "capex",
         label: "CAPEX exposure",
-        value: inr(kpis?.total_capex_exposure ?? 0),
+        value: usd(kpis?.total_capex_exposure ?? 0),
         icon: { group: "chart-data", name: "bar-graph" },
         tone: "green",
       },
@@ -305,14 +305,14 @@ export function Register() {
       title: "Repair spend",
       width: "130px",
       align: "right",
-      render: (_v, row) => inr(row.repair_spend),
+      render: (_v, row) => usd(row.repair_spend),
     },
     {
       key: "replacement_cost",
       title: "Replacement",
       width: "130px",
       align: "right",
-      render: (_v, row) => inr(row.replacement_cost),
+      render: (_v, row) => usd(row.replacement_cost),
     },
     {
       key: "capex_priority",

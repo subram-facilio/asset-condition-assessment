@@ -1,0 +1,353 @@
+{
+  "title": "ConditionCoreAnalysis",
+  "type": "object",
+  "properties": {
+    "narrative": {
+      "type": "object",
+      "properties": {
+        "condition_label": {
+          "type": "string",
+          "description": "The grade word supplied in the calculated results, echoed exactly. Never your own grading."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Two or three sentences stating the asset's overall condition and the single most important reason for it."
+        },
+        "why_condition": {
+          "type": "string",
+          "description": "Why the condition score is what it is, referring only to the evidence streams named in the calculated results."
+        },
+        "why_main_problem": {
+          "type": "string",
+          "description": "What the dominant recurring problem is, how many corrective work orders evidence it, and which component it concentrates on."
+        },
+        "why_deterioration": {
+          "type": "string",
+          "description": "Whether the asset is getting worse and on what evidence. Say plainly when deterioration is inferred rather than measured."
+        },
+        "why_rul": {
+          "type": "string",
+          "description": "How remaining useful life follows from age, expected life and condition. Name any input that was an estimate."
+        },
+        "why_recommendation": {
+          "type": "string",
+          "description": "Why the recommendation supplied in the calculated results follows from the evidence. You explain the decision; you never change it."
+        },
+        "caveats": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "condition_label",
+        "summary",
+        "why_condition",
+        "why_main_problem",
+        "why_deterioration",
+        "why_rul",
+        "why_recommendation",
+        "caveats"
+      ],
+      "additionalProperties": false
+    },
+    "cross_stream": {
+      "type": "object",
+      "properties": {
+        "corroborations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "repair_effectiveness_note": {
+          "type": "string",
+          "description": "Whether past repairs are holding, judged only from wording that says so. Empty string when nothing in the input speaks to it."
+        },
+        "data_gaps": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "confidence_in_recommendation": {
+          "type": "string",
+          "description": "How well the evidence streams support the recommendation. Low when streams disagree or most evidence is missing.",
+          "enum": ["high", "medium", "low"]
+        },
+        "what_would_change_this": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "corroborations",
+        "conflicts",
+        "repair_effectiveness_note",
+        "data_gaps",
+        "confidence_in_recommendation",
+        "what_would_change_this"
+      ],
+      "additionalProperties": false
+    },
+    "inspection_analysis": {
+      "type": "object",
+      "properties": {
+        "inspections_reviewed": {
+          "type": "number",
+          "description": "How many inspections you read. Use 0 when the input carries none."
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Normalized issue category. Report rust, surface rust and rust scaling all as corrosion.",
+                "enum": [
+                  "corrosion",
+                  "leakage",
+                  "oil_leakage",
+                  "crack_fracture",
+                  "dent_deformation",
+                  "broken_component",
+                  "missing_component",
+                  "insulation_damage",
+                  "coating_deterioration",
+                  "fouling",
+                  "scaling",
+                  "thermal_damage",
+                  "loose_component",
+                  "physical_wear",
+                  "surface_deterioration",
+                  "other_visible_abnormality"
+                ]
+              },
+              "severity": {
+                "type": "string",
+                "description": "The severity the inspector's own wording supports. Use unknown when the wording does not indicate one.",
+                "enum": ["low", "medium", "high", "critical", "unknown"]
+              },
+              "confidence": {
+                "type": "number",
+                "description": "Between 0.00 and 1.00. How certain you are the wording describes this issue on this asset."
+              },
+              "component": {
+                "type": "string",
+                "description": "The component the response names, in lower_snake_case. Use unspecified when it names none."
+              },
+              "location": {
+                "type": "string",
+                "description": "The location on the asset the response names. Empty string when it names none."
+              },
+              "quote": {
+                "type": "string",
+                "description": "The exact span of the answer text stating this issue, copied character for character with no paraphrase. It is checked against the source text and the observation is discarded when it is not found there."
+              },
+              "inspection_id": {
+                "type": "string",
+                "description": "The inspection id this observation came from, copied exactly from the input."
+              },
+              "answer_id": {
+                "type": "string",
+                "description": "The answer id this observation came from, copied exactly from the input."
+              }
+            },
+            "required": [
+              "type",
+              "severity",
+              "confidence",
+              "component",
+              "location",
+              "quote",
+              "inspection_id",
+              "answer_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "repair_effectiveness": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "issue": {
+                "type": "string",
+                "description": "The normalized issue category this verdict is about."
+              },
+              "verdict": {
+                "type": "string",
+                "description": "Whether a past repair on this issue held. Use unknown unless the wording states it plainly.",
+                "enum": ["held", "recurred_after_treatment", "unknown"]
+              },
+              "quote": {
+                "type": "string",
+                "description": "The exact span of the answer text supporting this verdict, copied character for character."
+              }
+            },
+            "required": ["issue", "verdict", "quote"],
+            "additionalProperties": false
+          }
+        },
+        "confirms_good_condition": {
+          "type": "boolean",
+          "description": "True only when an inspector positively states nothing was wrong, not merely when no defect was mentioned."
+        },
+        "operability": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "description": "Whether the inspector reported the asset as usable on the day of inspection.",
+              "enum": [
+                "operational",
+                "operational_with_concern",
+                "not_operational",
+                "unknown"
+              ]
+            },
+            "quote": {
+              "type": "string",
+              "description": "The exact span of the answer text supporting this, copied character for character. Empty string when value is unknown."
+            }
+          },
+          "required": ["value", "quote"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "inspections_reviewed",
+        "observations",
+        "repair_effectiveness",
+        "confirms_good_condition",
+        "operability"
+      ],
+      "additionalProperties": false
+    },
+    "baselines": {
+      "type": "object",
+      "properties": {
+        "expected_life_years": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "number",
+              "description": "Typical service life in years for this equipment class, from published service-life data."
+            },
+            "confidence": {
+              "type": "number",
+              "description": "Between 0.00 and 1.00. High when a recognised service-life standard covers this class."
+            },
+            "basis": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["value", "confidence", "basis", "assumptions"],
+          "additionalProperties": false
+        },
+        "criticality": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "enum": ["low", "medium", "high"]
+            },
+            "confidence": {
+              "type": "number",
+              "description": "Between 0.00 and 1.00."
+            },
+            "basis": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["value", "confidence", "basis", "assumptions"],
+          "additionalProperties": false
+        },
+        "avg_repair_cost": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "number",
+              "description": "Indicative cost of one corrective repair, in the requested currency."
+            },
+            "currency": {
+              "type": "string",
+              "description": "ISO currency code, echoing the currency given in the input."
+            },
+            "confidence": {
+              "type": "number",
+              "description": "Between 0.00 and 1.00. Keep this low: no customer rate card is available."
+            },
+            "basis": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["value", "currency", "confidence", "basis", "assumptions"],
+          "additionalProperties": false
+        },
+        "replacement_cost": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "number",
+              "description": "Indicative full replacement cost, in the requested currency, equipment only."
+            },
+            "currency": {
+              "type": "string",
+              "description": "ISO currency code, echoing the currency given in the input."
+            },
+            "capacity_inferred": {
+              "type": "string",
+              "description": "Capacity or size inferred from the model number, or an empty string when it cannot be inferred."
+            },
+            "confidence": {
+              "type": "number",
+              "description": "Between 0.00 and 1.00. Keep this low: cost depends on capacity, region and specification."
+            },
+            "basis": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "assumptions": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": [
+            "value",
+            "currency",
+            "capacity_inferred",
+            "confidence",
+            "basis",
+            "assumptions"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "expected_life_years",
+        "criticality",
+        "avg_repair_cost",
+        "replacement_cost"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": ["narrative", "cross_stream", "inspection_analysis", "baselines"],
+  "additionalProperties": false
+}

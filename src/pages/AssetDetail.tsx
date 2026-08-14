@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
-import { fn, inr } from "../lib/vibe";
+import { fn, usd } from "../lib/vibe";
 import type { AssetDetail as Detail, Metric, MtbfGap, Narrative } from "../lib/types";
 import { Empty, ErrorBanner, GapList, LifecycleBar, MtbfBars, Provenance, Spark, Val, pretty } from "../lib/ui";
 import { DetailShell, RailFact, type DetailTab } from "../components/DetailShell";
@@ -122,6 +122,27 @@ function Qa({ q, a }: { q: string; a?: string }) {
   );
 }
 
+/**
+ * Where a finding's evidence came from. This was a two-way ternary that called
+ * everything-but-`photo` "WO text", which mislabelled operator-supplied photos and
+ * would have reported an inspector's words as work-order wording.
+ */
+const SOURCE_LABEL: Record<string, string> = {
+  photo: "photo",
+  photo_manual: "photo (supplied)",
+  photo_unusable: "photo (unusable)",
+  wo_text: "WO text",
+  inspection: "inspection",
+};
+
+const SOURCE_TONE: Record<string, "info" | "mute" | "warn"> = {
+  photo: "info",
+  photo_manual: "info",
+  photo_unusable: "warn",
+  wo_text: "mute",
+  inspection: "info",
+};
+
 const TABLE_CELL: React.CSSProperties = {
   padding: "var(--spacing-container-large) var(--spacing-container-xlarge)",
   borderBottom: "1px solid var(--colors-border-neutral-base-subtler)",
@@ -184,6 +205,9 @@ export function AssetDetail({ assetId }: { assetId: number }) {
   const inputs: any = ev?.inputs || {};
   const narrative: Narrative | undefined = ev?.narrative;
   const lock = ev?.narrative_number_lock;
+  const crossStream = ev?.cross_stream;
+  const inspectionEvidence = ev?.inspection_observations;
+  const quoteLock = ev?.quote_lock;
   const baselines = ev?.baselines;
   const scope = an?.analysis_scope;
   const mismatches = d?.engine_overrides?.count_mismatches || [];
@@ -358,7 +382,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
             />
           </div>
 
-          {narrative && narrative.source === "condition_assessment_agent" && (
+          {narrative && narrative.source === "condition_core_agent" && (
             <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
               <CardTitle icon={{ group: "form builder", name: "selectall" }}>Assessment</CardTitle>
 
@@ -402,7 +426,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                     <StatusTag tone={priorityTone(a.capex_priority)}>CAPEX {a.capex_priority}</StatusTag>
                   )}
                   <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                    {inr(a.replacement_cost)}
+                    {usd(a.replacement_cost)}
                   </FText>
                   {baselines && (
                     <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
@@ -433,11 +457,58 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               )}
 
               <CardNote>
-                Written by the condition-assessment agent from the computed values, and verified to contain no
+                Written by the condition-core agent from the computed values, and verified to contain no
                 figure absent from them.
               </CardNote>
             </Card>
           )}
+
+          {crossStream &&
+            (crossStream.corroborations?.length > 0 ||
+              crossStream.conflicts?.length > 0 ||
+              crossStream.repair_effectiveness_note) && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                <CardTitle
+                  icon={{ group: "webtabs", name: "inspection" }}
+                  action={
+                    <StatusTag
+                      tone={
+                        crossStream.confidence_in_recommendation === "high"
+                          ? "success"
+                          : crossStream.confidence_in_recommendation === "low"
+                          ? "warn"
+                          : "info"
+                      }
+                    >
+                      {crossStream.confidence_in_recommendation} confidence
+                    </StatusTag>
+                  }
+                >
+                  Across the evidence
+                </CardTitle>
+
+                {crossStream.corroborations?.length > 0 && (
+                  <Qa q="Where the evidence agrees" a={crossStream.corroborations.join(" ")} />
+                )}
+                {crossStream.conflicts?.length > 0 && (
+                  <Qa q="Where it disagrees" a={crossStream.conflicts.join(" ")} />
+                )}
+                {crossStream.repair_effectiveness_note && (
+                  <Qa q="Are past repairs holding" a={crossStream.repair_effectiveness_note} />
+                )}
+                {crossStream.data_gaps?.length > 0 && (
+                  <Qa q="What is missing" a={crossStream.data_gaps.join(" ")} />
+                )}
+                {crossStream.what_would_change_this?.length > 0 && (
+                  <Qa q="What would change this" a={crossStream.what_would_change_this.join(" ")} />
+                )}
+
+                <CardNote>
+                  The condition score is a weighted mean, so it can report what the streams average to but
+                  never whether they tell the same story. This is that judgment.
+                </CardNote>
+              </Card>
+            )}
 
           {narrative && narrative.source === "rejected_agent_reply" && (
             <ErrorBanner>
@@ -512,7 +583,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
             <CardTitle icon={{ group: "time-date", name: "date-tick" }}>Lifecycle</CardTitle>
             <LifecycleBar
               age={ageMetric}
-              expectedLife={Number(inputs.expected_life_years) || 15}
+              expectedLife={Number(inputs.expected_life_years) || 0}
               purchasedYear={String(an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
             />
           </Card>
@@ -752,10 +823,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
 
             <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
               <CardTitle icon={{ group: "files", name: "document" }}>Cost basis</CardTitle>
-              <Row label="Corrective spend, last 3 years">{inr(a.repair_spend)}</Row>
+              <Row label="Corrective spend, last 3 years">{usd(a.repair_spend)}</Row>
               <Row label="Estimated replacement">
                 <>
-                  {inr(a.replacement_cost)}
+                  {usd(a.replacement_cost)}
                   {baselines && (
                     <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
                   )}
@@ -823,6 +894,57 @@ export function AssetDetail({ assetId }: { assetId: number }) {
       {tab === "evidence" && (
         <>
           <PhotoEvidence assetId={assetId} onDone={load} />
+
+          {inspectionEvidence && inspectionEvidence.observations?.length > 0 && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              <CardTitle
+                icon={{ group: "webtabs", name: "inspection" }}
+                action={
+                  <StatusTag tone={inspectionEvidence.operability?.value === "operational" ? "success" : "info"}>
+                    {(inspectionEvidence.operability?.value || "unknown").replace(/_/g, " ")}
+                  </StatusTag>
+                }
+              >
+                What the inspector wrote
+              </CardTitle>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                {inspectionEvidence.observations.map((o, i) => (
+                  <div key={`${o.answer_id}-${o.type}-${i}`} style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-small)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
+                      <StatusTag tone={severityTone(o.severity)}>{o.severity}</StatusTag>
+                      <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+                        {o.type.replace(/_/g, " ")}
+                      </FText>
+                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                        {o.component.replace(/_/g, " ")}
+                        {o.location ? ` · ${o.location}` : ""}
+                      </FText>
+                    </div>
+                    <FText appearance="captionReg12" styleProps={{ color: "textDescription", display: "block" }}>
+                      “{o.quote}”
+                    </FText>
+                  </div>
+                ))}
+              </div>
+
+              {inspectionEvidence.repair_effectiveness?.length > 0 && (
+                <Qa
+                  q="Did the last repair hold"
+                  a={inspectionEvidence.repair_effectiveness
+                    .map((r) => `${r.issue.replace(/_/g, " ")}: ${r.verdict.replace(/_/g, " ")}`)
+                    .join(" · ")}
+                />
+              )}
+
+              <CardNote>
+                Read from {inspectionEvidence.inspections_reviewed} closed inspection
+                {inspectionEvidence.inspections_reviewed === 1 ? "" : "s"}. Every claim is quoted verbatim from
+                the inspector's own answer — one that cannot be found in the source text is discarded rather
+                than shown. These observations reach the condition score on the next assessment.
+              </CardNote>
+            </Card>
+          )}
           <div
             style={{
               display: "grid",
@@ -874,8 +996,8 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                     </td>
                     <td style={TABLE_CELL}>{f.confidence.toFixed(2)}</td>
                     <td style={TABLE_CELL}>
-                      <StatusTag tone={f.source === "photo" ? "info" : "mute"}>
-                        {f.source === "photo" ? "photo" : "WO text"}
+                      <StatusTag tone={SOURCE_TONE[f.source] || "mute"}>
+                        {SOURCE_LABEL[f.source] || f.source}
                       </StatusTag>
                     </td>
                     <td style={{ ...TABLE_CELL, font: "var(--text-caption-reg-12)" }}>{f.evidence[0] || "—"}</td>
@@ -911,6 +1033,14 @@ export function AssetDetail({ assetId }: { assetId: number }) {
             <ErrorBanner>
               The written explanation was rejected because it contained figures absent from its input:{" "}
               {lock.unseen_figures.join(", ")}.
+            </ErrorBanner>
+          )}
+
+          {quoteLock && quoteLock.unquoted.length > 0 && (
+            <ErrorBanner>
+              {quoteLock.unquoted.length} inspection claim
+              {quoteLock.unquoted.length === 1 ? " was" : "s were"} discarded because the quoted wording could
+              not be found in the inspector's answer: {quoteLock.unquoted.join("; ")}.
             </ErrorBanner>
           )}
 

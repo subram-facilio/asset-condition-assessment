@@ -24,7 +24,7 @@ export async function fileAction<T = any>(actionSlug: string, payload: Record<st
   return (await vibe.executeAction("facilio-cmms-files", actionSlug, payload)) as T;
 }
 
-export type AgentName = "photo-validation" | "asset-baseline" | "condition-assessment";
+export type AgentName = "photo-validation" | "condition-core";
 
 /**
  * Run one of the app's agents. Structured replies arrive as a JSON *string* in
@@ -44,10 +44,11 @@ export async function runAgent<T = any>(
   return JSON.parse(raw) as T;
 }
 
-export function inr(v: number): string {
-  if (!v) return "₹0";
-  if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)}Cr`;
-  if (v >= 100000) return `₹${(v / 100000).toFixed(1)}L`;
-  if (v >= 1000) return `₹${(v / 1000).toFixed(0)}K`;
-  return `₹${v}`;
+/** Format a cost figure. The engine asks the baseline agent for USD, so costs are dollars. */
+export function usd(v: number): string {
+  if (!v) return "$0";
+  if (v >= 1000000000) return `$${(v / 1000000000).toFixed(2)}B`;
+  if (v >= 1000000) return `$${(v / 1000000).toFixed(2)}M`;
+  if (v >= 1000) return `$${(v / 1000).toFixed(1)}K`;
+  return `$${v}`;
 }

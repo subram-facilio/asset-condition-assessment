@@ -138,6 +138,8 @@ export function Provenance({ source, confidence }: { source?: string; confidence
       ? "configured"
       : source === "fallback"
       ? "fallback"
+      : source === "asset_sample"
+      ? "AI estimate, this asset"
       : "AI estimate";
   const low = typeof confidence === "number" && confidence > 0 && confidence < 0.6;
   const ink =
@@ -264,6 +266,17 @@ export function LifecycleBar({
     return (
       <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
         Age unavailable — {age?.reason || "no purchase date recorded"}.
+      </FText>
+    );
+  }
+  // The bar is age AGAINST expected life, so with no expected life there is nothing to
+  // measure against. It used to default to 15 years, which drew a full, confident bar
+  // out of a figure nobody had supplied.
+  if (!expectedLife) {
+    return (
+      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+        {age.value}y in service. Expected service life is unknown for this category, so
+        there is nothing to measure it against — estimate it on the Baselines page.
       </FText>
     );
   }

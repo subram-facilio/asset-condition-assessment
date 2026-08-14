@@ -31,6 +31,28 @@ export interface PipelineResult {
   /** Whether the explanation survived the number lock, and what tripped it. */
   narrativeAccepted: boolean;
   narrativeRejectedFigures: string[];
+  /**
+   * Inspector observations that survived the quote lock, and how many closed
+   * inspections they came from. They reach the condition score on the NEXT assess.
+   */
+  observationsKept: number;
+  inspectionCount: number;
+}
+
+/**
+ * What a run may reuse. An absent option means a full fresh check — the normal path,
+ * because Facilio's work orders and photos change under us and stored evidence goes
+ * stale silently.
+ */
+export interface RunOptions {
+  /**
+   * Keep the findings already on record instead of re-deriving them.
+   *
+   * Only the manual photo-upload path sets this. Those findings came from files an
+   * operator supplied off their own disk, and a fresh run would delete them in order
+   * to re-read bytes Facilio may not hand back — see `supplyPhotoEvidence` below.
+   */
+  reuseStoredEvidence?: boolean;
 }
 
 /** Where the analysed image bytes came from — surfaced in the UI, never hidden. */
@@ -49,10 +71,26 @@ export const INITIAL_STAGES: Stage[] = [
   { key: "agent", label: "Analyze photos", detail: "photo-validation agent, batched one run per work order", state: "pending" },
   { key: "findings", label: "Store findings", detail: "Validate and persist, deduped per attachment", state: "pending" },
   { key: "analysis", label: "Count occurrences and consolidate", detail: "Engine recomputes every count; agent keeps judgment", state: "pending" },
-  { key: "baseline", label: "Resolve baselines", detail: "Expected life, criticality and costs — the fields Facilio lacks", state: "pending" },
   { key: "assess", label: "Run lifecycle engines", detail: "Condition, MTBF, deterioration, RUL, risk, CAPEX, recommendation", state: "pending" },
-  { key: "narrate", label: "Explain the result", detail: "condition-assessment agent, number-locked to the computed values", state: "pending" },
+  { key: "core", label: "Analyse and explain", detail: "condition-core agent — explanation, cross-stream judgment, inspections, baselines", state: "pending" },
 ];
+
+/**
+ * The step list for one run.
+ *
+ * Three details are only true in one mode, so the mode decides them: a fresh run
+ * rebuilds the text stream rather than topping it up, re-reads photos it has already
+ * seen, and replaces their findings rather than deduping against them.
+ */
+export function initialStages(fresh = true): Stage[] {
+  return INITIAL_STAGES.map((s) => {
+    if (!fresh) return { ...s };
+    if (s.key === "text") return { ...s, detail: "Re-derive issue codes from the current work-order wording" };
+    if (s.key === "photos") return { ...s, detail: "Re-read every before photo from Facilio" };
+    if (s.key === "findings") return { ...s, detail: "Replace each re-analyzed photo's findings" };
+    return { ...s };
+  });
+}
 
 type Emit = (stages: Stage[], note?: string) => void;
 
@@ -107,13 +145,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function runBatch(
   targets: BatchTarget[],
   emit: (runs: AssetRun[]) => void,
-  shouldCancel: () => boolean = () => false
+  shouldCancel: () => boolean = () => false,
+  opts: RunOptions = {}
 ): Promise<AssetRun[]> {
+  const fresh = opts.reuseStoredEvidence !== true;
   const runs: AssetRun[] = targets.map((t) => ({
     assetId: t.asset_id,
     assetName: t.name,
     state: "queued",
-    stages: INITIAL_STAGES.map((s) => ({ ...s })),
+    stages: initialStages(fresh),
     attempts: 0,
   }));
 
@@ -134,10 +174,14 @@ export async function runBatch(
 
     run.state = "running";
     run.startedAt = Date.now();
-    run.stages = INITIAL_STAGES.map((s) => ({ ...s }));
+    run.stages = initialStages(fresh);
     publish();
 
     // One retry: the failures seen in practice were transient, not deterministic.
+    //
+    // Both attempts carry the same `opts`. If attempt 1 died after replacing three of
+    // five attachments, a reusing attempt 2 would see those three as already analyzed,
+    // skip them, and leave the asset with a half-old, half-new evidence set.
     for (let attempt = 1; attempt <= 2; attempt++) {
       run.attempts = attempt;
       try {
@@ -145,7 +189,7 @@ export async function runBatch(
           run.stages = stages;
           if (note !== undefined) run.note = note;
           publish();
-        });
+        }, opts);
         run.result = result;
         run.state = "done";
         run.error = undefined;
@@ -157,11 +201,20 @@ export async function runBatch(
           run.error = message;
           // Leave the stage that threw marked as failed so the row explains itself.
           run.stages = run.stages.map((s) => (s.state === "running" ? { ...s, state: "failed" } : s));
+
+          // A fresh run deletes the evidence it is about to replace. Failing inside
+          // those two stages is the one case where the asset is left holding fewer
+          // findings than before, so the row has to say so rather than let a stale
+          // register entry look intact.
+          const cleared = run.stages.find((s) => s.state === "failed" && (s.key === "text" || s.key === "findings"));
+          if (fresh && cleared) {
+            run.note = `Superseded findings were cleared before this step failed — this asset now holds fewer findings than before. Re-running restores them.`;
+          }
         } else {
           run.note = `Attempt 1 failed — retrying. ${message.slice(0, 120)}`;
           publish();
           await sleep(RETRY_PAUSE_MS);
-          run.stages = INITIAL_STAGES.map((s) => ({ ...s }));
+          run.stages = initialStages(fresh);
         }
       }
     }
@@ -188,8 +241,9 @@ export function estimateSeconds(photoCounts: number[]): { low: number; high: num
   return { low: Math.round(low), high: Math.round(high) };
 }
 
-export async function runPipeline(assetId: number, emit: Emit): Promise<PipelineResult> {
-  const stages = INITIAL_STAGES.map((s) => ({ ...s }));
+export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions = {}): Promise<PipelineResult> {
+  const fresh = opts.reuseStoredEvidence !== true;
+  const stages = initialStages(fresh);
   const set = (key: string, state: StageState, detail?: string, note?: string) => {
     const st = stages.find((s) => s.key === key);
     if (st) {
@@ -210,13 +264,40 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
 
   /* -------- 2. Work-order text stream -------- */
   set("text", "running");
+  let textReplaced = 0;
+  if (fresh) {
+    // Only once `gather` has proved the CMMS is answering — it is the biggest fan-out
+    // and where a bad connection announces itself — and only immediately before the
+    // handler that rebuilds these rows. Nothing else refills them.
+    //
+    // `normalize-wo-text` alone can never drop a finding: it inserts what is missing
+    // and leaves everything else. So a work order that was reworded, retyped to
+    // Preventive, or deleted in Facilio keeps its original issue code forever unless
+    // the stream is cleared and rebuilt from what Facilio says now.
+    const cleared = await fn<{ deleted: number }>("clear-wo-text-findings", { assetId });
+    textReplaced = cleared.deleted;
+  }
   const text = await fn<{ inserted: number; work_orders_scanned: number; unmatched: number }>("normalize-wo-text", {
     assetId,
   });
-  set("text", "done", `${text.inserted} issues from ${text.work_orders_scanned} work orders (${text.unmatched} no match)`);
+  set(
+    "text",
+    "done",
+    // Reusing, `inserted` counts what is NEW and reads 0 on a repeat run. Fresh, it is
+    // the whole rebuilt stream — left worded as "N issues" a reader takes that jump
+    // from 0 to 14 as fourteen newly discovered problems.
+    fresh
+      ? `${text.inserted} issue${text.inserted === 1 ? "" : "s"} re-derived from ${text.work_orders_scanned} work orders (${text.unmatched} no match, ${textReplaced} replaced)`
+      : `${text.inserted} issues from ${text.work_orders_scanned} work orders (${text.unmatched} no match)`
+  );
 
   /* -------- 3. Photo bytes -------- */
-  const alreadyDone = new Set(bundle.analyzed_attachment_ids || []);
+  // Two different questions, and a fresh run needs them to differ. `onRecord` is what
+  // earlier runs actually analysed — true either way, and what the "we tried and could
+  // not" message below has to name. `alreadyDone` is only what THIS run may skip, and
+  // is empty when fresh, because the whole point is to look again.
+  const onRecord = new Set(bundle.analyzed_attachment_ids || []);
+  const alreadyDone = fresh ? new Set<number>() : onRecord;
   const wosWithPhotos = bundle.work_orders.filter((w) => w.photos.length > 0);
   const pending = wosWithPhotos.filter((w) => w.photos.some((p) => !alreadyDone.has(p.attachment_id)));
 
@@ -228,7 +309,7 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
   // nothing new to fetch" — the two used to report identically, so an asset with
   // ten analysed photos and one unreadable new one looked like a total failure.
   const cachedCount = wosWithPhotos.reduce(
-    (n, w) => n + w.photos.filter((p) => alreadyDone.has(p.attachment_id)).length,
+    (n, w) => n + w.photos.filter((p) => onRecord.has(p.attachment_id)).length,
     0
   );
 
@@ -247,19 +328,34 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     const loaded = outcome.uploads.reduce((a, u) => a + u.files.length, 0);
 
     if (loaded > 0) {
-      set("photos", "done", `${loaded} photo${loaded === 1 ? "" : "s"} read live from Facilio`);
+      set("photos", "done", `${loaded} photo${loaded === 1 ? "" : "s"} ${fresh ? "re-read" : "read"} live from Facilio`);
     } else if (cachedCount > 0) {
       // Nothing new could be read, but earlier runs already analysed most of the
       // asset. The assessment is not degraded, so this is not a failure.
+      //
+      // The wording has to split by mode. A skipped agent stage means "there was
+      // nothing new" on a reusing run, but on a fresh run it means "we went to look
+      // again and the bytes would not come" — reporting that as reuse would claim a
+      // choice the run never made.
       const unreadable = outcome.unreadable;
       set(
         "photos",
         "done",
-        `${cachedCount} photo${cachedCount === 1 ? "" : "s"} already analyzed; ${unreadable} new photo${
-          unreadable === 1 ? "" : "s"
-        } could not be read`
+        fresh
+          ? `Could not re-read ${unreadable} photo${unreadable === 1 ? "" : "s"} — the ${cachedCount} finding${
+              cachedCount === 1 ? "" : "s"
+            } already on record stand`
+          : `${cachedCount} photo${cachedCount === 1 ? "" : "s"} already analyzed; ${unreadable} new photo${
+              unreadable === 1 ? "" : "s"
+            } could not be read`
       );
-      set("agent", "skipped", `Reusing ${cachedCount} cached photo findings`);
+      set(
+        "agent",
+        "skipped",
+        fresh
+          ? "Photos could not be re-read from Facilio — existing findings kept"
+          : `Reusing ${cachedCount} cached photo findings`
+      );
     } else {
       set("photos", "failed", outcome.reason || "Could not read any photo bytes");
       set("agent", "skipped", "No readable photo evidence");
@@ -287,7 +383,7 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
       ].join("\n");
       analysis = await runAgent<Analysis>(input, uploads.flatMap((u) => u.files.map((f) => f.fileId)));
       photosAnalyzed = totalPhotos;
-      set("agent", "done", `1 agent run over ${totalPhotos} photos`);
+      set("agent", "done", `1 agent run over ${totalPhotos} photos${fresh ? " (re-analyzed)" : ""}`);
     } else {
       // Larger asset: one run per work order, then a consolidation run.
       const perWo: Analysis[] = [];
@@ -318,12 +414,45 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
         JSON.stringify(perWo),
       ].join("\n");
       analysis = await runAgent<Analysis>(consolidationInput);
-      set("agent", "done", `${perWo.length} work-order runs + 1 consolidation run over ${photosAnalyzed} photos`);
+      set(
+        "agent",
+        "done",
+        `${perWo.length} work-order runs + 1 consolidation run over ${photosAnalyzed} photos${
+          fresh ? " (re-analyzed)" : ""
+        }`
+      );
     }
 
     /* -------- 5. Persist findings -------- */
     set("findings", "running");
     const findings = toFindingRows(analysis, uploads);
+
+    let superseded = 0;
+    if (fresh) {
+      // Replace, never append. `assess` weights every finding ROW into the condition
+      // score, so a photo the agent judged `corrosion` last run and `crack` this run
+      // would leave two rows past save-findings' (attachment_id, issue_code) guard and
+      // vote twice — the grade would move on data that never changed.
+      //
+      // The list comes from the rows just produced, never from the photos this run set
+      // out to read. A photo whose bytes were unreadable, or that the agent left out of
+      // its reply, is absent from it and so keeps the finding it already had rather
+      // than losing it to a delete nothing refills. That makes the whole path
+      // self-limiting: it can only delete evidence it has already replaced.
+      const replacing: number[] = [];
+      for (const r of findings) {
+        const id = Number(r.attachment_id);
+        if (id > 0 && replacing.indexOf(id) === -1) replacing.push(id);
+      }
+      if (replacing.length > 0) {
+        const cleared = await fn<{ deleted: number }>("clear-attachment-findings", {
+          assetId,
+          attachmentIds: replacing.join(","),
+        });
+        superseded = cleared.deleted;
+      }
+    }
+
     const saved = await fn<{ inserted: number; skipped_duplicates: number; rejected: string[] }>("save-findings", {
       assetId,
       payload: JSON.stringify({ findings }),
@@ -331,9 +460,10 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     set(
       "findings",
       "done",
-      `${saved.inserted} stored, ${saved.skipped_duplicates} already present${
-        saved.rejected.length ? `, ${saved.rejected.length} rejected` : ""
-      }`
+      (fresh
+        ? `${saved.inserted} stored, ${superseded} superseded`
+        : `${saved.inserted} stored, ${saved.skipped_duplicates} already present`) +
+        (saved.rejected.length ? `, ${saved.rejected.length} rejected` : "")
     );
   } else {
     set("findings", "skipped", "No photo findings to store");
@@ -355,37 +485,7 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
       : `${savedAnalysis.analysis.recurring_issues.length} issues counted from distinct work orders`
   );
 
-  /* -------- 7. Baselines — the four fields Facilio has no column for -------- */
-  set("baseline", "running");
-  const category = bundle.asset.asset_type || "DEFAULT";
-  try {
-    const prep = await fn<{ cached: boolean; input: string; estimated_at?: string }>("baseline-input", {
-      category,
-      force: 0,
-    });
-    if (prep.cached) {
-      set("baseline", "done", `${category} baselines already estimated — reused, not re-run`);
-    } else {
-      const reply = await runAgent<unknown>(prep.input, undefined, "asset-baseline");
-      const saved = await fn<{ low_confidence: boolean; expected_life_years: number }>("save-baselines", {
-        category,
-        reply: JSON.stringify(reply),
-      });
-      set(
-        "baseline",
-        "done",
-        `${category}: ${saved.expected_life_years}y expected life${
-          saved.low_confidence ? " · cost figures are low-confidence estimates" : ""
-        }`
-      );
-    }
-  } catch (e: any) {
-    // A missing baseline must not sink the assessment; the engine falls back and
-    // records the fallback in provenance.
-    set("baseline", "failed", `Could not estimate baselines for ${category} — using configured values`);
-  }
-
-  /* -------- 8. Lifecycle engines -------- */
+  /* -------- 7. Lifecycle engines -------- */
   set("assess", "running");
   const assessment = await fn<Assessment>("assess", { assetId });
   const mtbfNote =
@@ -398,28 +498,63 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     `${assessment.recommendation} · risk ${assessment.risk_score}/100 · RUL ${assessment.rul_years}y${mtbfNote}`
   );
 
-  /* -------- 9. The explanation, number-locked -------- */
-  set("narrate", "running");
+  /* -------- 8. The core agent: one call, four jobs -------- *
+   * It explains THIS run's numbers, and its inspection observations and baseline
+   * constants are stored for the NEXT one. That lag is deliberate: the numbers it is
+   * asked to explain must already be final, so evidence it contributes cannot move
+   * the score it is describing.                                                    */
+  set("core", "running");
   let narrativeAccepted = false;
   let narrativeRejectedFigures: string[] = [];
+  let observationsKept = 0;
+  let inspectionCount = 0;
   try {
-    const reply = await runAgent<unknown>(assessment.narrative_block || "", undefined, "condition-assessment");
-    const lock = await fn<{ accepted: boolean; unseen_figures: string[] }>("save-narrative", {
+    const prep = await fn<{ input: string; block: string; answers: unknown[]; inspection_count: number }>(
+      "core-input",
+      { assetId }
+    );
+    inspectionCount = prep.inspection_count || 0;
+    set(
+      "core",
+      "running",
+      inspectionCount > 0
+        ? `Reading ${inspectionCount} closed inspection(s) and explaining the result`
+        : "Explaining the result — no closed inspection on this asset"
+    );
+
+    const reply = await runAgent<unknown>(prep.input, undefined, "condition-core");
+    const saved = await fn<{
+      accepted: boolean;
+      unseen_figures: string[];
+      observations_kept: number;
+      observations_unquoted: string[];
+      inspection_findings_inserted: number;
+    }>("save-core", {
       assetId,
-      block: assessment.narrative_block || "",
+      block: prep.block,
+      answers: JSON.stringify(prep.answers || []),
       reply: JSON.stringify(reply),
     });
-    narrativeAccepted = lock.accepted;
-    narrativeRejectedFigures = lock.unseen_figures || [];
+
+    narrativeAccepted = saved.accepted;
+    narrativeRejectedFigures = saved.unseen_figures || [];
+    observationsKept = saved.observations_kept || 0;
+
+    const obsNote =
+      inspectionCount > 0
+        ? ` · ${observationsKept} inspector observation(s) recorded${
+            saved.observations_unquoted?.length ? `, ${saved.observations_unquoted.length} unquoted claim(s) discarded` : ""
+          }`
+        : "";
     set(
-      "narrate",
-      lock.accepted ? "done" : "failed",
-      lock.accepted
-        ? "Explanation written and verified against the computed values"
-        : `Explanation rejected — it contained figures not in the input: ${narrativeRejectedFigures.join(", ")}`
+      "core",
+      saved.accepted ? "done" : "failed",
+      saved.accepted
+        ? `Explanation verified against the computed values${obsNote}`
+        : `Explanation rejected — it contained figures not in the input: ${narrativeRejectedFigures.join(", ")}${obsNote}`
     );
   } catch (e: any) {
-    set("narrate", "failed", "Could not generate the explanation — the computed results stand on their own");
+    set("core", "failed", "Could not run the core analysis — the computed results stand on their own");
   }
 
   return {
@@ -431,6 +566,8 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
     countMismatches: mismatches,
     narrativeAccepted,
     narrativeRejectedFigures,
+    observationsKept,
+    inspectionCount,
   };
 }
 

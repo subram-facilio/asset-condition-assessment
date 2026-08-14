@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FButton, FIcon, FSpinner, FText } from "@facilio/dsm-react-wrapper";
 import { fn } from "../lib/vibe";
 import {
-  INITIAL_STAGES,
   estimateSeconds,
+  initialStages,
   runBatch,
   type AssetRun,
   type AssetRunState,
@@ -442,13 +442,15 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
 
   // Single-asset mode keeps the original view: one stage list, no queue wrapper.
   const singleRun = runs.length === 1 ? runs[0] : null;
-  const singleStages = singleRun ? singleRun.stages : INITIAL_STAGES;
+  // The idle list has to be the fresh-run one, so the steps shown before the button is
+  // pressed are the steps that will actually run.
+  const singleStages = singleRun ? singleRun.stages : initialStages();
   const stagesComplete = singleStages.filter((s) => s.state === "done" || s.state === "skipped").length;
 
   return (
     <PageShell
       title="Run assessment"
-      subtitle="The agent reads each asset's corrective work orders and before-maintenance photos from Facilio and produces one consolidated condition assessment. Nothing is entered by hand."
+      subtitle="The agent reads each asset's corrective work orders and before-maintenance photos from Facilio and produces one consolidated condition assessment. Every run re-reads that evidence from Facilio rather than reusing stored findings, so an edited or deleted work order is reflected the next time you run it. Nothing is entered by hand."
     >
       {/* ---------------------------------------------------------- 1 · assets */}
       <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
@@ -530,8 +532,11 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
             {selected.length === 0
               ? "Nothing selected yet"
               : single
-              ? `Selected: ${chosen[0]?.name ?? selected[0]}`
-              : `${selected.length} assets selected · about ${formatEstimate(estimate.low, estimate.high)}, run one at a time`}
+              ? `Selected: ${chosen[0]?.name ?? selected[0]} · photos are analyzed again on every run`
+              : `${selected.length} assets selected · about ${formatEstimate(
+                  estimate.low,
+                  estimate.high
+                )}, run one at a time · photos are analyzed again on every run`}
           </FText>
           <div style={{ display: "flex", gap: "var(--spacing-container-large)", flexShrink: 0 }}>
             {running && (

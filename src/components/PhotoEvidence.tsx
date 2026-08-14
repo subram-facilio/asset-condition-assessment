@@ -104,12 +104,21 @@ export function PhotoEvidence({ assetId, onDone }: { assetId: number; onDone: ()
 
       const out = await supplyPhotoEvidence(assetId, supplied, setNote);
 
-      // The findings now exist, so the normal pipeline treats them as cached, skips the
-      // photo stage and produces the assessment with visual evidence included.
+      // The findings now exist, so the pipeline is asked to keep them, skip the photo
+      // stage and produce the assessment with visual evidence included.
+      //
+      // This is the only caller that opts out of a fresh run, and it has to. These
+      // findings came from files the operator supplied off their own disk; a fresh run
+      // would delete them and try to re-read the same attachments from Facilio — the
+      // fetch PHOTO-ACCESS-REQUEST.md exists because of — leaving the upload undone.
       setNote("Re-running the assessment with the new photo evidence…");
-      await runPipeline(assetId, (_stages, n) => {
-        if (n) setNote(n);
-      });
+      await runPipeline(
+        assetId,
+        (_stages, n) => {
+          if (n) setNote(n);
+        },
+        { reuseStoredEvidence: true }
+      );
 
       const parts = [
         `${out.photosAnalysed} photo${out.photosAnalysed === 1 ? "" : "s"} analyzed across ${out.woRuns} work order${

@@ -38,23 +38,30 @@ It is enforced three independent ways, so no single failure can break it:
                                       │
                      ┌────────────────┴────────────────┐
                      ▼                                 ▼
-        condition-engine (WASM function)      photo-validation (gpt-4o)
+        condition-engine (WASM function)      photo-validation (gpt-5.1)
         ───────────────────────────────       ─────────────────────────
         scope filter: corrective only         visual defect analysis
         BEFORE-photo filter                   issue normalization
         WO-text normalization                 severity judgment
-        count(distinct wo_id)                 recurrence status
-        occurrence rates                      trend classification
-        component concentration               risk pattern + narrative
-        condition · deterioration
-        RUL · risk · CAPEX
-        recommendation                                │
+        inspection answer fetch               recurrence status
+        count(distinct wo_id)                 trend classification
+        occurrence rates                                │
+        component concentration                         │
+        condition · deterioration             condition-core (gpt-4o)
+        RUL · risk · CAPEX                    ─────────────────────────
+        recommendation                        the explanation
+                     │                        cross-stream judgment
+                     │                        inspection normalization
+                     │                        class reference constants
                      │                                │
                      └────────────┬───────────────────┘
                                   ▼
-                        save-analysis
-                        engine numbers overwrite agent numbers,
-                        deltas logged to engine_overrides_json
+                        save-analysis · save-core
+                        engine numbers overwrite agent numbers;
+                        the number lock discards any prose figure
+                        absent from the calculated results, and the
+                        quote lock discards any inspection claim not
+                        found verbatim in the inspector's own answer
                                   ▼
                         CONDITION REGISTER  (app Postgres)
                         findings · risk_analyses · assessments
@@ -67,14 +74,20 @@ Age, cost and criticality are deliberately **excluded** from the visual analysis
 
 ## What is AI and what is not
 
-| Done by the agent | Done by deterministic code |
+There are exactly **two** agents. `photo-validation` reads photographs;
+`condition-core` does everything else an LLM does here, in one call per assessment.
+
+| Done by the agents | Done by deterministic code |
 | --- | --- |
 | Reading photographs | Fetching Facilio data |
 | Identifying visible defects | Filtering to corrective work orders |
 | Normalizing issue names | Selecting BEFORE photos only |
 | Judging severity | Counting occurrences and rates |
 | Classifying recurrence and trend | Component concentration |
-| Writing the explanation | Condition, deterioration, RUL, risk, CAPEX, recommendation |
+| Reading inspector prose into observations | Deciding which inspections count (closed only) |
+| Judging where evidence streams agree or conflict | Weighting and renormalizing the streams |
+| Supplying equipment-class reference constants | Condition, deterioration, RUL, risk, CAPEX, recommendation |
+| Writing the explanation | Enforcing the number lock and the quote lock |
 
 Issue normalization is enforced by the output schema's enum rather than by prompt obedience: `rust`, `surface rust` and `rust scaling` can only ever be emitted as `corrosion`.
 
@@ -91,10 +104,12 @@ src/
   pages/Register.tsx     the condition register
   pages/Settings.tsx     cost and lifecycle configuration
 functions/
-  condition-engine.ts    all 16 server handlers
+  condition-engine.ts    all 23 server handlers
 agent-schemas/
-  photo-validation-instructions.txt   the agent specification
+  photo-validation-instructions.txt   the photo agent specification
   photo-validation.json               structured-output schema
+  condition-core-instructions.txt     the core analyst specification
+  condition-core.json                 structured-output schema
 seed/
   fetch-photos.mjs       licence-checked CC0/public-domain defect images
   seed-demo.mjs          demo corrective history + BEFORE photos
@@ -137,7 +152,18 @@ These are real constraints found while building, not design choices. Each is sur
 
 **No cost or criticality fields exist in this org.** Work orders expose no cost field and assets no criticality field, so both are read from the editable `cost_config` table and every figure is labelled as estimated rather than invented.
 
-**No inspection records exist yet.** The condition score is designed to weight an inspection-grade stream at 0.35; with no inspections present that weight is redistributed across the streams that do exist, and the redistribution is reported in the assessment's derivation record.
+**Inspections are read from the inspector's words, not from a score.** The condition score weights an
+inspection stream at 0.35, resolved in two tiers. Tier 1 is a scored template's `scorePercent` — the
+better signal, but latent here: every template in this org is a Checklist whose questions carry no
+point values, so no score field is ever returned. Tier 2 is the written answers, which `condition-core`
+normalizes into observations and the engine grades. Only **closed** inspections (`responseStatus`
+`Completed`) are read — a partly answered walkthrough is a half-formed opinion. Every observation must
+quote its source verbatim or it is discarded, so a claim about what an inspector said can always be
+traced to the sentence they wrote. With no closed inspection the 0.35 is redistributed across the
+streams that do exist, and the redistribution is reported in the assessment's derivation record.
+
+Observations reach the condition score on the **next** assessment: the core agent runs after the
+numbers are final, so evidence it contributes cannot move the score it was asked to explain.
 
 **Structured-output schemas must not describe object or array nodes.** Repeated sub-schemas are deduplicated into `$ref`s, and the provider rejects a `$ref` carrying sibling keywords: `$ref cannot have keywords {'description'}`. Descriptions live only on scalar leaves; the semantics live in the instructions.
 

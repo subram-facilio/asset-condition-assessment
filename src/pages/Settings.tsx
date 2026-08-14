@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
-import { fn, inr, runAgent } from "../lib/vibe";
+import { fn, runAgent, usd } from "../lib/vibe";
 import type { BaselineRow } from "../lib/types";
 import { Empty, ErrorBanner, Provenance } from "../lib/ui";
 import { PageShell } from "../components/PageShell";
@@ -45,21 +45,21 @@ export function Settings() {
       .catch(() => {});
   }
 
-  /** Ask the agent for one category's baselines. Cached results are reused. */
-  async function estimate(category: string, force = false) {
+  /**
+   * Ask the core agent for one category's baselines.
+   *
+   * `core-input` takes a category instead of an asset here, so the agent is handed the
+   * baseline request alone with no asset evidence attached. These category rows are the
+   * cold-start value every asset uses until its own assessment supplies a sample, and
+   * the row a human override replaces.
+   */
+  async function estimate(category: string) {
     setBusy(category);
     setError("");
     try {
-      const prep = await fn<{ cached: boolean; input: string }>("baseline-input", {
-        category,
-        force: force ? 1 : 0,
-      });
-      if (prep.cached && !force) {
-        setBusy("");
-        return;
-      }
-      const reply = await runAgent<unknown>(prep.input, undefined, "asset-baseline");
-      await fn("save-baselines", { category, reply: JSON.stringify(reply) });
+      const prep = await fn<{ input: string }>("core-input", { category });
+      const reply = await runAgent<unknown>(prep.input, undefined, "condition-core");
+      await fn("save-core", { category, reply: JSON.stringify(reply) });
       load();
     } catch (e: any) {
       setError(`Could not estimate ${category}: ${String(e?.message || e)}`);
@@ -186,7 +186,7 @@ export function Settings() {
                           appearance="secondary"
                           size="medium"
                           disabled={!!busy}
-                          onButtonClick={() => estimate(r.category, true)}
+                          onButtonClick={() => estimate(r.category)}
                         >
                           {busy === r.category ? "Estimating…" : "Re-estimate"}
                         </FButton>
@@ -261,7 +261,7 @@ export function Settings() {
                 />
                 <Field
                   label="Average repair cost"
-                  value={inr(r.avg_repair_cost)}
+                  value={usd(r.avg_repair_cost)}
                   confidence={r.confidence.repair}
                   source={r.source}
                   basis={r.basis.avg_repair_cost}
@@ -277,7 +277,7 @@ export function Settings() {
                 />
                 <Field
                   label="Replacement cost"
-                  value={inr(r.replacement_cost)}
+                  value={usd(r.replacement_cost)}
                   confidence={r.confidence.replacement}
                   source={r.source}
                   basis={r.basis.replacement_cost}

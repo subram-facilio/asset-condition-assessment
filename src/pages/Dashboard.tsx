@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FButton, FIcon, FText } from "@facilio/dsm-react-wrapper";
-import { fn, inr } from "../lib/vibe";
+import { fn, usd } from "../lib/vibe";
 import type { Assessment } from "../lib/types";
 import { ErrorBanner, useRoute } from "../lib/ui";
 import { useUser } from "../context/UserContext";
@@ -528,7 +528,7 @@ export function Dashboard() {
                 <StatTile
                   icon={{ group: "files", name: "document" }}
                   label="CAPEX exposure"
-                  value={inr(kpis?.total_capex_exposure ?? 0)}
+                  value={usd(kpis?.total_capex_exposure ?? 0)}
                   loading={loading}
                 />
               </div>
@@ -608,7 +608,7 @@ export function Dashboard() {
                         <>
                           <StatusTag tone={priorityTone(r.capex_priority)}>{r.capex_priority}</StatusTag>
                           <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                            {inr(r.replacement_cost)}
+                            {usd(r.replacement_cost)}
                           </FText>
                         </>
                       }

@@ -186,6 +186,29 @@ const SEV_VALUE: Record<string, number> = {
   critical: 5,
 };
 
+/* ------------------------------------------------------------------ *
+ * Findings provenance.
+ *
+ * One table holds three kinds of row and they must never be mixed:
+ *
+ *   corrective evidence  photo / photo_manual / wo_text — a failure happened
+ *   evidence about it    photo_unusable — a photo that could not be read
+ *   inspection evidence  inspection — a scheduled walkthrough, no failure implied
+ *
+ * Inspection rows reuse `wo_id` for the inspection id and `attachment_id` for the
+ * answer id, because the app database allows no DDL. So every query that means
+ * "corrective work order" must say so: counting an inspection id as a distinct work
+ * order invents an occurrence, and letting an inspection severity into the 0.45
+ * severity stream lets one defect vote twice, since it already carries the 0.35
+ * inspection stream.
+ * ------------------------------------------------------------------ */
+
+const isCorrectiveEvidence = (source: string) =>
+  source === "photo" || source === "photo_manual" || source === "wo_text";
+
+/** SQL list for queries keyed on `attachment_id`, where an answer id could collide. */
+const PHOTO_SOURCES_SQL = "('photo','photo_manual','photo_unusable')";
+
 function worstSeverity(levels: string[]): string {
   let best = "unknown";
   let bestRank = -1;
@@ -395,7 +418,7 @@ function priorityWeight(priority: string): number {
 server.addHandler({
   name: "gather",
   description:
-    "Fetch an asset, its corrective work orders, their BEFORE photos and any inspections. Returns the evidence bundle plus which attachments already have cached findings.",
+    "Fetch an asset, its corrective work orders and their BEFORE photos. Returns the evidence bundle plus which attachments already have cached findings.",
   parameters: {
     assetId: { description: "Facilio asset id", type: "number" },
     maxWos: { description: "Max work orders to pull photos for (default 40)", type: "number" },
@@ -527,19 +550,6 @@ server.addHandler({
       }
     }
 
-    let inspections: any[] = [];
-    let inspectionError = "";
-    try {
-      const insRes = await cmms("list-inspections", {
-        filters: `resource=${assetId}`,
-        page_size: 50,
-        include_count: true,
-      });
-      inspections = insRes.data || [];
-    } catch (e) {
-      inspectionError = String(e);
-    }
-
     return {
       asset: assetFacts(assetId, asset),
       work_order_type_filter: "Corrective,Breakdown",
@@ -550,8 +560,6 @@ server.addHandler({
       attachment_calls_skipped: attachmentCallsSkipped,
       analyzed_attachment_ids: cached,
       work_orders: wos,
-      inspections,
-      inspectionError,
     };
   },
 });
@@ -693,7 +701,8 @@ server.addHandler({
 
       if (attachmentId) {
         const { rows } = db.query(
-          "select 1 as hit from findings where attachment_id = $1 and issue_code = $2 and attachment_id <> 0 limit 1",
+          `select 1 as hit from findings where attachment_id = $1 and issue_code = $2
+             and attachment_id <> 0 and source in ${PHOTO_SOURCES_SQL} limit 1`,
           [attachmentId, issue]
         );
         if (rows.length > 0) {
@@ -837,7 +846,9 @@ function computeStats(db: any, assetId: number, totalCorrective: number) {
 
   // Unusable photos are evidence about the evidence: they belong in the photo
   // tallies and in the limitations, but they must never create an occurrence.
-  const findings = allRows.filter((f) => f.source !== "photo_unusable");
+  // Inspection rows are excluded for a different reason — their wo_id is an
+  // inspection id, so counting them here would report work orders that never existed.
+  const findings = allRows.filter((f) => isCorrectiveEvidence(f.source));
   const unusableRows = allRows.filter((f) => f.source === "photo_unusable");
 
   const woIds: number[] = [];
@@ -1306,6 +1317,137 @@ function fallbackNarrative(stats: any) {
  * excludes age/cost/criticality, so they live here instead.
  * ------------------------------------------------------------------ */
 
+/**
+ * The inspection evidence stream, resolved in two tiers.
+ *
+ * Tier 1 — a SCORED template. Facilio computes `scorePercent` over a human-authored
+ * rubric, so it is arithmetic rather than judgment and it is the better signal when
+ * it exists. Latent in orgs whose templates are Checklists: those carry no point
+ * values on any question, so no score field is ever returned at all.
+ *
+ * Tier 2 — the inspector's WRITTEN answers, normalized into `findings` rows by the
+ * condition-core agent and quote-locked on the way in. The agent supplied perception
+ * only; the arithmetic below is the engine's, and it mirrors the corrective severity
+ * stream so the two indices are comparable.
+ *
+ * Only the LATEST inspection sets the index. Condition is a present-tense fact, and
+ * averaging a 2019 walkthrough into today's grade would report an asset as it once was.
+ *
+ * The stream is named after the tier that produced it. Calling a prose-derived index
+ * `inspection_grade` would imply a scored rubric stood behind it, the same reason
+ * `sevStreamName` distinguishes photo_severity from wo_text_severity.
+ */
+async function inspectionStream(db: any, assetId: number) {
+  const unavailable = (reason: string) => ({
+    stream: missing<string>(reason),
+    grade: null,
+    basis: "none",
+    count: 0,
+  });
+
+  /* ---- Tier 1: a scored template ---- */
+  let insRows: any[] = [];
+  try {
+    const insRes = await cmms("list-inspections", {
+      filters: `resource=${assetId}`,
+      select:
+        "id,scorePercent,totalScore,fullScore,responseStatus,status,actualWorkEnd,scheduledWorkStart,createdTime",
+      page_size: 100,
+    });
+    insRows = insRes.data || [];
+  } catch (e) {
+    // Tier 2 reads the local table, so a CMMS outage must not sink the whole stream.
+    insRows = [];
+  }
+
+  const scored = insRows.filter((r) => num(r.scorePercent) > 0 || num(r.totalScore) > 0);
+  if (scored.length > 0) {
+    const latest = scored
+      .slice()
+      .sort((a, b) =>
+        String(a.actualWorkEnd || a.createdTime) < String(b.actualWorkEnd || b.createdTime) ? -1 : 1
+      )
+      .pop();
+    const pct =
+      num(latest.scorePercent) > 0
+        ? num(latest.scorePercent)
+        : num(latest.fullScore) > 0
+        ? (num(latest.totalScore) / num(latest.fullScore)) * 100
+        : 0;
+    return {
+      stream: have("available"),
+      // A high score means good condition, so invert onto the 1..5 worst-is-5 scale.
+      grade: round(1 + (100 - clamp(pct, 0, 100)) / 25, 2),
+      basis: "template_score",
+      count: scored.length,
+    };
+  }
+
+  /* ---- Tier 2: quote-locked observations from the inspector's own words ---- */
+  const { rows: obs } = db.query(
+    `select wo_id, issue_code, severity, confidence, event_date from findings
+      where asset_id = $1 and asset_id <> 0 and source = 'inspection'`,
+    [assetId]
+  );
+  if (obs.length === 0) {
+    return unavailable(
+      insRows.length === 0
+        ? "no inspections exist for this asset"
+        : `${insRows.length} inspection(s) found, none scored and none yet read for written observations`
+    );
+  }
+
+  // Latest inspection only. `wo_id` holds the inspection id on these rows.
+  let latestId = 0;
+  let latestDate = "";
+  for (const r of obs) {
+    const d = String(r.event_date || "");
+    if (d > latestDate) {
+      latestDate = d;
+      latestId = num(r.wo_id);
+    }
+  }
+
+  // One entry per issue within that inspection: the same defect restated across two
+  // answers is one observation, the inspection analogue of the work-order rule.
+  const worstByIssue: Record<string, { severity: string; confidence: number }> = {};
+  for (const r of obs) {
+    if (num(r.wo_id) !== latestId) continue;
+    const k = String(r.issue_code);
+    const sev = String(r.severity || "unknown");
+    const conf = num(r.confidence);
+    if (!worstByIssue[k]) worstByIssue[k] = { severity: sev, confidence: conf };
+    else {
+      worstByIssue[k].severity = worstSeverity([worstByIssue[k].severity, sev]);
+      worstByIssue[k].confidence = Math.max(worstByIssue[k].confidence, conf);
+    }
+  }
+
+  const issues = Object.keys(worstByIssue);
+  if (issues.length === 0) return unavailable("the latest inspection recorded no condition observations");
+
+  // Confidence-weighted mean of SEV_VALUE, matching the corrective severity stream.
+  // No priority weighting: an inspection carries no priority, and `priorityWeight`
+  // would silently return its default of 1, reading as a decision it never made.
+  let numr = 0;
+  let den = 0;
+  for (const k of issues) {
+    const c = Math.max(worstByIssue[k].confidence, 0.1);
+    const v = SEV_VALUE[worstByIssue[k].severity];
+    numr += (v === undefined ? 2.5 : v) * c;
+    den += c;
+  }
+
+  return {
+    stream: have("available"),
+    grade: round(den > 0 ? numr / den : 1, 2),
+    basis: "response_observations",
+    count: issues.length,
+    inspection_id: latestId,
+    observed_at: latestDate.slice(0, 10),
+  };
+}
+
 server.addHandler({
   name: "assess",
   description:
@@ -1333,11 +1475,33 @@ server.addHandler({
 
     const db = conn();
     const stats = computeStats(db, assetId, totalCorrective);
-    const cfg = baselineFor(db, category);
+    const cfg = baselineFor(db, category, assetId);
+
+    // `assess` rewrites the row by delete+insert, so anything in the old evidence blob
+    // is lost unless carried across. The narrative is SUPPOSED to be lost — it
+    // describes numbers that no longer exist — but the baseline sample is an INPUT to
+    // the next run, and dropping it would silently demote the asset back to the
+    // category estimate one run after condition-core supplied it.
+    let priorBaselineSample: any = null;
+    {
+      const { rows: prior } = db.query(
+        "select evidence_json from assessments where asset_id = $1 and asset_id <> 0 limit 1",
+        [assetId]
+      );
+      if (prior.length > 0) {
+        try {
+          priorBaselineSample =
+            (JSON.parse(String(prior[0].evidence_json || "{}")) || {}).baselines_sample || null;
+        } catch (e) {
+          priorBaselineSample = null;
+        }
+      }
+    }
 
     /* ---- Reliability: MTBF, MTTR and repeat failures ---- */
     const { rows: issueDates } = db.query(
-      "select wo_id, issue_code, event_date from findings where asset_id = $1 and asset_id <> 0 and source <> 'photo_unusable'",
+      `select wo_id, issue_code, event_date from findings
+        where asset_id = $1 and asset_id <> 0 and source in ('photo','photo_manual','wo_text')`,
       [assetId]
     );
     const issueByWo: Record<string, string> = {};
@@ -1377,54 +1541,10 @@ server.addHandler({
         )
       : null;
 
-    /* ---- Inspection stream (dormant while the org has none) ---- */
-    let inspection: any = { stream: missing<string>("not queried") };
-    try {
-      const insRes = await cmms("list-inspections", {
-        filters: `resource=${assetId}`,
-        select:
-          "id,scorePercent,totalScore,fullScore,totalFindings,totalFindingsClosed,responseStatus,status,actualWorkEnd,scheduledWorkStart,createdTime",
-        page_size: 100,
-      });
-      const insRows: any[] = insRes.data || [];
-      if (insRows.length === 0) {
-        inspection = { stream: missing<string>("no inspections exist for this asset"), grade: null };
-      } else {
-        const scored = insRows.filter((r) => num(r.scorePercent) > 0 || num(r.totalScore) > 0);
-        if (scored.length === 0) {
-          inspection = {
-            stream: missing<string>(`${insRows.length} inspection(s) found but none is scored`),
-            grade: null,
-          };
-        } else {
-          const latest = scored
-            .slice()
-            .sort((a, b) =>
-              String(a.actualWorkEnd || a.createdTime) < String(b.actualWorkEnd || b.createdTime) ? -1 : 1
-            )
-            .pop();
-          const pct =
-            num(latest.scorePercent) > 0
-              ? num(latest.scorePercent)
-              : num(latest.fullScore) > 0
-              ? (num(latest.totalScore) / num(latest.fullScore)) * 100
-              : 0;
-          inspection = {
-            stream: have("available"),
-            grade: round(1 + (100 - clamp(pct, 0, 100)) / 25, 2),
-            count: scored.length,
-          };
-        }
-      }
-    } catch (e) {
-      inspection = { stream: missing<string>(`inspection lookup failed`), grade: null };
-    }
+    /* ---- Inspection stream: scored template, else quote-locked observations ---- */
+    const inspection = await inspectionStream(db, assetId);
 
     /* ---- Condition score (1 best .. 5 worst) ---- */
-    const { rows: sevRows } = db.query(
-      "select severity, confidence, source from findings where asset_id = $1 and asset_id <> 0",
-      [assetId]
-    );
     // Severity is weighted by confidence and by the work order's priority, so a
     // High-priority corrective event counts for more than a Low one.
     const priorityByWo: Record<string, string> = {};
@@ -1432,7 +1552,8 @@ server.addHandler({
       priorityByWo[String(num(w.id))] = String(w.priority?.displayName || w.priority?.name || w.priority || "");
     }
     const { rows: sevWoRows } = db.query(
-      "select wo_id, severity, confidence, source from findings where asset_id = $1 and asset_id <> 0 and source <> 'photo_unusable'",
+      `select wo_id, severity, confidence, source from findings
+        where asset_id = $1 and asset_id <> 0 and source in ('photo','photo_manual','wo_text')`,
       [assetId]
     );
     let sevNum = 0;
@@ -1480,7 +1601,11 @@ server.addHandler({
     // absent stream never silently drags the score toward zero.
     const streams: Array<{ name: string; w: number; v: number }> = [];
     if (inspection.stream.available && inspection.grade !== null) {
-      streams.push({ name: "inspection_grade", w: 0.35, v: num(inspection.grade) });
+      streams.push({
+        name: inspection.basis === "template_score" ? "inspection_grade" : "inspection_condition",
+        w: 0.35,
+        v: num(inspection.grade),
+      });
     }
     if (hasFindings) streams.push({ name: sevStreamName, w: 0.45, v: sevIndex });
     if (totalCorrective > 0) streams.push({ name: "corrective_pressure", w: 0.2, v: pressureIndex });
@@ -1756,6 +1881,8 @@ server.addHandler({
         mtbf: "months between consecutive corrective work orders; contracting when the later half averages <= 0.7 of the earlier half",
         repair_spend: "corrective WOs in the last 3 years x the baseline repair rate",
       },
+      inspection_basis: inspection.basis,
+      inspection_observations_used: inspection.count,
       baselines: {
         source: cfg.source,
         expected_life_years: expectedLife,
@@ -1849,7 +1976,13 @@ server.addHandler({
       `evidence_streams_used: ${streamsUsed
         .map((s) => `${s.name} weighted ${s.weight}`)
         .join("; ")}`,
-      inspection.stream.available ? "" : `evidence_stream_absent: inspection grade — ${inspection.stream.reason}`,
+      inspection.stream.available
+        ? `inspection_condition_index: ${inspection.grade} of 5, from ${
+            inspection.basis === "template_score"
+              ? "a scored inspection template"
+              : `${inspection.count} observation(s) an inspector wrote on ${inspection.observed_at}`
+          }`
+        : `evidence_stream_absent: inspection grade — ${inspection.stream.reason}`,
       "",
       `dominant_issue: ${top ? top.display_name : "none identified"}`,
       top
@@ -1906,6 +2039,16 @@ server.addHandler({
     ]
       .filter((l) => l !== "")
       .join("\n");
+
+    // Persist the block alongside the evidence it describes. `save-narrative` used to
+    // rely on the browser handing it back; `core-input` runs server-side and needs it
+    // from the row, so the whole core loop can be driven without a browser.
+    evidence.narrative_block = narrativeBlock;
+    if (priorBaselineSample) evidence.baselines_sample = priorBaselineSample;
+    db.query("update assessments set evidence_json = $1 where asset_id = $2", [
+      JSON.stringify(evidence),
+      assetId,
+    ]);
 
     const row = {
       asset_id: assetId,
@@ -2177,6 +2320,7 @@ server.addHandler({
     // Per-year distinct-WO matrix, the visual form of the trend evidence.
     const matrix: Record<string, Record<string, number[]>> = {};
     for (const f of findings) {
+      if (!isCorrectiveEvidence(f.source)) continue;
       const y = f.event_date.slice(0, 4);
       if (!y) continue;
       if (!matrix[f.issue_code]) matrix[f.issue_code] = {};
@@ -2241,6 +2385,12 @@ server.addHandler({
             recommendation: String(a.recommendation || ""),
             rule_recommendation: inp.rule_recommendation || String(a.recommendation || ""),
             warranty: metricOf(inp.warranty_status, "no warranty expiry date recorded"),
+            // The inspection stream was computed and weighted but never returned here,
+            // so the UI could not report it either way. It can now.
+            inspection_stream: metricOf(
+              inp.inspection_basis && inp.inspection_basis !== "none" ? inp.inspection_basis : null,
+              "no inspection evidence reached this assessment"
+            ),
             warranty_gate_applied: inp.warranty_gate_applied === true,
             corrective_wo_count: num(a.corrective_wo_count),
             mtbf: {
@@ -2355,7 +2505,8 @@ server.addHandler({
 
     const db = conn();
     const { rows: done } = db.query(
-      "select distinct attachment_id from findings where asset_id = $1 and attachment_id <> 0",
+      `select distinct attachment_id from findings
+        where asset_id = $1 and attachment_id <> 0 and source in ${PHOTO_SOURCES_SQL}`,
       [assetId]
     );
     const analyzed: number[] = done.map((r: any) => num(r.attachment_id));
@@ -2448,6 +2599,80 @@ server.addHandler({
   },
 });
 
+/* ------------------------------------------------------------------ *
+ * The two narrow deletes a fresh re-assessment needs.
+ *
+ * Both exist because `assess` weights every finding ROW into the condition
+ * score (see sevWoRows), not one vote per work order. Re-deriving evidence
+ * without first removing what it supersedes leaves two rows for one photo or
+ * one work order, and the grade moves on data that never changed.
+ *
+ * `reset-asset` above is deliberately NOT reused. It also empties
+ * assessment_history, which is the only record of how this asset's score has
+ * moved: clearing it resets trend_direction to insufficient_evidence and
+ * strips deterioration out of the risk score. A fresh run must re-derive
+ * evidence, never erase history.
+ * ------------------------------------------------------------------ */
+
+server.addHandler({
+  name: "clear-wo-text-findings",
+  description:
+    "Delete one asset's work-order-text findings so normalize-wo-text re-derives them from the current wording. Call it immediately before normalize-wo-text and never on its own — nothing else rebuilds these rows.",
+  parameters: {
+    assetId: { description: "Facilio asset id", type: "number" },
+  },
+  execute: async (args) => {
+    const assetId = num(args.assetId);
+    if (!assetId) throw new Error("assetId is required");
+    const db = conn();
+    const r = db.query("delete from findings where asset_id = $1 and asset_id <> 0 and source = 'wo_text'", [assetId]);
+    return { ok: true, asset_id: assetId, deleted: num(r.rowCount) };
+  },
+});
+
+server.addHandler({
+  name: "clear-attachment-findings",
+  description:
+    "Delete every finding recorded against the given attachment ids for one asset, whatever its source, so a fresh analysis of those photos replaces the old rows instead of adding to them. Pass only attachments that were just re-read and re-analyzed.",
+  parameters: {
+    assetId: { description: "Facilio asset id", type: "number" },
+    attachmentIds: { description: "Comma-separated attachment ids that were just re-analyzed", type: "string" },
+  },
+  execute: async (args) => {
+    const assetId = num(args.assetId);
+    if (!assetId) throw new Error("assetId is required");
+
+    const ids: number[] = [];
+    for (const part of String(args.attachmentIds || "").split(",")) {
+      const id = num(part);
+      // attachment_id 0 is the no-attachment sentinel every wo_text row carries,
+      // and num() turns a blank or malformed entry into 0. Dropping anything that
+      // is not a positive id is what keeps an empty list from deleting the whole
+      // text stream.
+      if (id > 0 && ids.indexOf(id) === -1) ids.push(id);
+    }
+    if (ids.length === 0) return { ok: true, asset_id: assetId, attachments: 0, deleted: 0 };
+
+    // One statement per id rather than a built IN list: every other query in this
+    // file is fully parameterized, and a photo-bearing asset has tens, not thousands.
+    //
+    // Not filtered by source on purpose. A surviving photo_manual row plus a fresh
+    // photo row for the same attachment slips past save-findings' (attachment_id,
+    // issue_code) guard whenever the issue code differs, and that one photo then
+    // votes twice into the score.
+    const db = conn();
+    let deleted = 0;
+    for (const id of ids) {
+      const r = db.query(
+        "delete from findings where asset_id = $1 and asset_id <> 0 and attachment_id = $2 and attachment_id <> 0",
+        [assetId, id]
+      );
+      deleted += num(r.rowCount);
+    }
+    return { ok: true, asset_id: assetId, attachments: ids.length, deleted };
+  },
+});
+
 server.addHandler({
   name: "assess-all",
   description: "Re-run text normalization and the lifecycle engines for every asset that has corrective work orders. Intended for a scheduled job.",
@@ -2501,28 +2726,54 @@ server.addHandler({
  * silently produce a remaining-life figure and a CAPEX priority that nobody could
  * source, which is worse than admitting the gap.
  */
-function baselineFor(db: any, category: string) {
+function baselineFor(db: any, category: string, assetId?: number) {
+  const fromRow = (r: any, source: string) => ({
+    expected_life_years: num(r.expected_life_years),
+    avg_repair_cost: num(r.avg_repair_cost),
+    replacement_cost: num(r.replacement_cost),
+    criticality: String(r.criticality || ""),
+    source,
+    confidence: {
+      life: num(r.conf_life),
+      criticality: num(r.conf_criticality),
+      repair: num(r.conf_repair),
+      replacement: num(r.conf_replacement),
+    },
+    basis: String(r.basis_json || "[]"),
+    assumptions: String(r.assumptions_json || "[]"),
+    estimated_at: String(r.estimated_at || ""),
+    resolved: true,
+  });
+
   const { rows } = db.query("select * from baselines where category = $1 limit 1", [category]);
-  if (rows.length > 0) {
-    const r = rows[0];
-    return {
-      expected_life_years: num(r.expected_life_years),
-      avg_repair_cost: num(r.avg_repair_cost),
-      replacement_cost: num(r.replacement_cost),
-      criticality: String(r.criticality || ""),
-      source: String(r.source || "ai_estimate"),
-      confidence: {
-        life: num(r.conf_life),
-        criticality: num(r.conf_criticality),
-        repair: num(r.conf_repair),
-        replacement: num(r.conf_replacement),
-      },
-      basis: String(r.basis_json || "[]"),
-      assumptions: String(r.assumptions_json || "[]"),
-      estimated_at: String(r.estimated_at || ""),
-      resolved: true,
-    };
+  const categoryRow = rows.length > 0 ? rows[0] : null;
+
+  // A human override outranks every estimate, including this asset's own sample —
+  // otherwise the next assessment would silently overwrite the correction.
+  if (categoryRow && String(categoryRow.source) === "override") {
+    return fromRow(categoryRow, "override");
   }
+
+  // This asset's most recent condition-core sample. Per-asset by request: the agent
+  // re-supplies the constants on every run, so two assets of one category can differ.
+  if (assetId) {
+    const { rows: aRows } = db.query(
+      "select evidence_json from assessments where asset_id = $1 and asset_id <> 0 limit 1",
+      [assetId]
+    );
+    if (aRows.length > 0) {
+      let sample: any = null;
+      try {
+        sample = (JSON.parse(String(aRows[0].evidence_json || "{}")) || {}).baselines_sample;
+      } catch (e) {
+        sample = null;
+      }
+      if (sample && num(sample.expected_life_years) > 0) return fromRow(sample, "asset_sample");
+    }
+  }
+
+  // Cold start: the category-level estimate, seeded from the Baselines page.
+  if (categoryRow) return fromRow(categoryRow, String(categoryRow.source || "ai_estimate"));
 
   return {
     expected_life_years: 0,
@@ -2537,186 +2788,6 @@ function baselineFor(db: any, category: string) {
     resolved: false,
   };
 }
-
-server.addHandler({
-  name: "baseline-input",
-  description:
-    "Build the input block for the asset-baseline agent for one category, including the observed corrective volume and priority mix. Returns cached:true when an estimate already exists.",
-  parameters: {
-    category: { description: "Asset category", type: "string" },
-    force: { description: "1 to re-estimate even when cached", type: "number" },
-  },
-  execute: async (args) => {
-    const category = String(args.category || "").trim();
-    if (!category) throw new Error("category is required");
-    const db = conn();
-
-    if (!num(args.force)) {
-      const { rows } = db.query("select category, estimated_at from baselines where category = $1 limit 1", [
-        category,
-      ]);
-      if (rows.length > 0) {
-        return { cached: true, category, estimated_at: String(rows[0].estimated_at || ""), input: "" };
-      }
-    }
-
-    // One representative asset of this category, for manufacturer and model.
-    let sample: any = {};
-    try {
-      const res = await cmms("list-assets", {
-        filters: `category=${category}`,
-        select: "id,name,category,manufacturer,model,description",
-        page_size: 1,
-      });
-      sample = (res.data || [])[0] || {};
-    } catch (e) {
-      /* category may not be filterable; the agent copes without a model */
-    }
-
-    // Observed corrective volume and priority mix for this category, which is real
-    // evidence the agent may use for its criticality judgement.
-    const { rows: mix } = db.query(
-      `select priority, count(*) as n from wo_meta
-        where wo_id <> 0 and asset_id in (
-          select distinct asset_id from assessments where category = $1 and asset_id <> 0
-        )
-        group by priority`,
-      [category]
-    );
-    const mixText = mix.length
-      ? mix.map((m: any) => `${String(m.priority || "unspecified")} ${num(m.n)}`).join(", ")
-      : "not available";
-    const { rows: vol } = db.query(
-      "select coalesce(sum(corrective_wo_count),0) as total, count(*) as assets from assessments where category = $1 and asset_id <> 0",
-      [category]
-    );
-
-    const input = [
-      `asset_category: ${category}`,
-      `asset_type: ${sample?.type?.displayName || "(not recorded)"}`,
-      `manufacturer: ${sample?.manufacturer || "(not recorded)"}`,
-      `model: ${sample?.model || "(not recorded)"}`,
-      `description: ${sample?.description || "(not recorded)"}`,
-      `currency: INR`,
-      `region: India`,
-      `corrective_volume: ${num(vol[0]?.total)} corrective work orders across ${num(vol[0]?.assets)} assessed asset(s) of this category`,
-      `priority_mix: ${mixText}`,
-    ].join("\n");
-
-    return { cached: false, category, input };
-  },
-});
-
-server.addHandler({
-  name: "save-baselines",
-  description:
-    "Store the asset-baseline agent's reply for one category, with its basis, assumptions and per-field confidence. Cost confidence is capped so a low-basis figure can never present as certain.",
-  parameters: {
-    category: { description: "Asset category", type: "string" },
-    reply: { description: "The agent's JSON reply, stringified", type: "string" },
-  },
-  execute: async (args) => {
-    const category = String(args.category || "").trim();
-    if (!category) throw new Error("category is required");
-    let r: any;
-    try {
-      r = JSON.parse(String(args.reply || "{}"));
-    } catch (e) {
-      throw new Error("reply must be valid JSON");
-    }
-
-    const life = num(r?.expected_life_years?.value) || BASELINE_FALLBACK.expected_life_years;
-    let crit = String(r?.criticality?.value || BASELINE_FALLBACK.criticality);
-    if (["low", "medium", "high"].indexOf(crit) === -1) crit = "medium";
-    const repair = Math.max(num(r?.avg_repair_cost?.value), 0);
-    const replacement = Math.max(num(r?.replacement_cost?.value), 0);
-
-    // A cost figure without a customer rate card cannot be trusted above 0.6,
-    // whatever the model claims.
-    const confLife = clamp(num(r?.expected_life_years?.confidence), 0, 1);
-    const confCrit = clamp(num(r?.criticality?.confidence), 0, 1);
-    const confRepair = clamp(num(r?.avg_repair_cost?.confidence), 0, 0.6);
-    const confReplacement = clamp(num(r?.replacement_cost?.confidence), 0, 0.6);
-
-    const basis = {
-      expected_life_years: r?.expected_life_years?.basis || [],
-      criticality: r?.criticality?.basis || [],
-      avg_repair_cost: r?.avg_repair_cost?.basis || [],
-      replacement_cost: r?.replacement_cost?.basis || [],
-      capacity_inferred: r?.replacement_cost?.capacity_inferred || "",
-      currency: r?.replacement_cost?.currency || "INR",
-    };
-    const assumptions = {
-      expected_life_years: r?.expected_life_years?.assumptions || [],
-      criticality: r?.criticality?.assumptions || [],
-      avg_repair_cost: r?.avg_repair_cost?.assumptions || [],
-      replacement_cost: r?.replacement_cost?.assumptions || [],
-    };
-
-    const db = conn();
-    const now = nowIso();
-    const { rows: hit } = db.query("select source from baselines where category = $1 limit 1", [category]);
-
-    if (hit.length > 0) {
-      // Never let an estimate overwrite a human override.
-      if (String(hit[0].source) === "override") {
-        return { ok: true, category, skipped: "a human override is in place" };
-      }
-      db.query(
-        `update baselines set expected_life_years = $1, avg_repair_cost = $2, replacement_cost = $3,
-           criticality = $4, source = 'ai_estimate', conf_life = $5, conf_criticality = $6,
-           conf_repair = $7, conf_replacement = $8, basis_json = $9, assumptions_json = $10,
-           estimated_at = $11 where category = $12`,
-        [
-          life,
-          repair,
-          replacement,
-          crit,
-          confLife,
-          confCrit,
-          confRepair,
-          confReplacement,
-          JSON.stringify(basis),
-          JSON.stringify(assumptions),
-          now,
-          category,
-        ]
-      );
-    } else {
-      db.query(
-        `insert into baselines
-           (category, expected_life_years, avg_repair_cost, replacement_cost, criticality, source,
-            conf_life, conf_criticality, conf_repair, conf_replacement, basis_json, assumptions_json, estimated_at)
-         values ($1,$2,$3,$4,$5,'ai_estimate',$6,$7,$8,$9,$10,$11,$12)`,
-        [
-          category,
-          life,
-          repair,
-          replacement,
-          crit,
-          confLife,
-          confCrit,
-          confRepair,
-          confReplacement,
-          JSON.stringify(basis),
-          JSON.stringify(assumptions),
-          now,
-        ]
-      );
-    }
-
-    return {
-      ok: true,
-      category,
-      expected_life_years: life,
-      criticality: crit,
-      avg_repair_cost: repair,
-      replacement_cost: replacement,
-      confidence: { life: confLife, criticality: confCrit, repair: confRepair, replacement: confReplacement },
-      low_confidence: confRepair < 0.6 || confReplacement < 0.6,
-    };
-  },
-});
 
 server.addHandler({
   name: "baselines",
@@ -2798,157 +2869,466 @@ server.addHandler({
 });
 
 /* ------------------------------------------------------------------ *
- * analyze-inspections — the inspection evidence stream.
+ * condition-core — the single analyst agent's input and output.
  *
- * Built against verified fields but dormant in this org: there are no inspections
- * and no templates, and templates cannot be created through the connection. It
- * activates with no code change the moment one exists.
+ * `core-input` mints the block; `save-core` validates the reply and is the only
+ * writer of inspection evidence. Between them sit the two locks that let one agent
+ * be trusted with four jobs at once: the number lock on the prose it writes about
+ * calculated results, and the quote lock on the claims it makes about what an
+ * inspector wrote.
  * ------------------------------------------------------------------ */
 
+/**
+ * Closed inspections for one asset, with the inspector's written answers.
+ *
+ * `responseStatus === "Completed"` is the gate. A partially answered walkthrough is a
+ * half-formed opinion, and reading it would let an inspector's first two notes stand
+ * as the asset's condition of record. Note that `status` is the workflow state and is
+ * NOT the gate: in this org every inspection sits at status "Open" while three are
+ * responseStatus "Completed", so `status` would exclude all of them.
+ *
+ * A BOOLEAN answer carries no condition information on its own — only its `comments`
+ * do. FILE_UPLOAD answers are skipped: this app cannot read attachment bytes.
+ */
+async function coreInspections(assetId: number) {
+  let rows: any[] = [];
+  try {
+    const res = await cmms("list-inspections", {
+      filters: `resource=${assetId}`,
+      select: "id,name,responseStatus,status,scheduledWorkStart,createdTime",
+      page_size: 100,
+    });
+    rows = res.data || [];
+  } catch (e) {
+    return [];
+  }
+
+  const closed = rows.filter((r) => String(r.responseStatus || "") === "Completed");
+  const out: any[] = [];
+
+  for (const r of closed) {
+    const inspectionId = num(r.id);
+    let detail: any = null;
+    try {
+      const res = await cmms("get-inspection", { inspectionId });
+      detail = res.data || res;
+    } catch (e) {
+      continue;
+    }
+
+    const answers: any[] = [];
+    for (const page of detail?.pages || []) {
+      for (const q of page?.questions || []) {
+        const a = q?.answer;
+        if (!a) continue;
+        const qType = String(q.questionType || "");
+        if (qType === "FILE_UPLOAD") continue;
+        const text = typeof a.answer === "string" ? a.answer : "";
+        const comments = String(a.comments || "");
+        if (!text && !comments) continue;
+        answers.push({
+          answer_id: String(num(a.id)),
+          question: String(q.question || ""),
+          question_type: qType,
+          answer_value: typeof a.answer === "boolean" ? (a.answer ? "Yes" : "No") : "",
+          text,
+          comments,
+        });
+      }
+    }
+    if (answers.length === 0) continue;
+
+    out.push({
+      inspection_id: String(inspectionId),
+      name: String(r.name || "Inspection"),
+      event_date: String(r.scheduledWorkStart || r.createdTime || "").slice(0, 10),
+      answers,
+    });
+  }
+
+  return out;
+}
+
+/** Render the observed corrective volume and priority mix for one category. */
+function categoryEvidence(db: any, category: string) {
+  const { rows: mix } = db.query(
+    `select priority, count(*) as n from wo_meta
+      where wo_id <> 0 and asset_id in (
+        select distinct asset_id from assessments where category = $1 and asset_id <> 0
+      )
+      group by priority`,
+    [category]
+  );
+  const { rows: vol } = db.query(
+    "select coalesce(sum(corrective_wo_count),0) as total, count(*) as assets from assessments where category = $1 and asset_id <> 0",
+    [category]
+  );
+  return {
+    volume: `${num(vol[0]?.total)} corrective work orders across ${num(vol[0]?.assets)} assessed asset(s) of this category`,
+    mix: mix.length
+      ? mix.map((m: any) => `${String(m.priority || "unspecified")} ${num(m.n)}`).join(", ")
+      : "not available",
+  };
+}
+
 server.addHandler({
-  name: "analyze-inspections",
+  name: "core-input",
   description:
-    "Read completed inspections for one asset and return the condition trajectory from scorePercent plus the unresolved finding burden.",
+    "Build the condition-core agent's input block. With assetId: the full five-section block including closed-inspection answers. With category only: the baseline request alone, for the Baselines page.",
   parameters: {
-    assetId: { description: "Facilio asset id", type: "number" },
+    assetId: { description: "Facilio asset id, for the full block", type: "number" },
+    category: { description: "Asset category, for a baseline-only block", type: "string" },
   },
   execute: async (args) => {
+    const db = conn();
     const assetId = num(args.assetId);
-    if (!assetId) throw new Error("assetId is required");
 
-    let rows: any[] = [];
-    let error = "";
+    /* ---- Baseline-only mode: the Baselines page, no asset in play ---- */
+    if (!assetId) {
+      const category = String(args.category || "").trim();
+      if (!category) throw new Error("assetId or category is required");
+      let sample: any = {};
+      try {
+        const res = await cmms("list-assets", {
+          filters: `category=${category}`,
+          select: "id,name,category,type,manufacturer,model,description",
+          page_size: 1,
+        });
+        sample = (res.data || [])[0] || {};
+      } catch (e) {
+        /* category may not be filterable; the agent copes without a model */
+      }
+      const ev = categoryEvidence(db, category);
+      const input = [
+        "MODE: BASELINES ONLY",
+        "No asset is under assessment. Return the four class reference constants in",
+        "`baselines`. For the other three sections return empty strings, empty arrays,",
+        "zero inspections reviewed and confidence_in_recommendation \"low\".",
+        "",
+        "=== 5. BASELINE REQUEST ===",
+        `asset_category: ${category}`,
+        `asset_type: ${sample?.type?.displayName || "(not recorded)"}`,
+        `manufacturer: ${sample?.manufacturer || "(not recorded)"}`,
+        `model: ${sample?.model || "(not recorded)"}`,
+        `description: ${sample?.description || "(not recorded)"}`,
+        `currency: USD`,
+        `region: India`,
+        `corrective_volume: ${ev.volume}`,
+        `priority_mix: ${ev.mix}`,
+      ].join("\n");
+      return { mode: "baselines_only", category, input, answers: [], inspection_count: 0 };
+    }
+
+    /* ---- Full mode ---- */
+    const { rows: aRows } = db.query(
+      "select category, asset_name, evidence_json from assessments where asset_id = $1 and asset_id <> 0 limit 1",
+      [assetId]
+    );
+    if (aRows.length === 0) throw new Error(`no assessment stored for asset ${assetId} — run assess first`);
+    const category = String(aRows[0].category || "DEFAULT");
+    let calculated = "";
     try {
-      const res = await cmms("list-inspections", {
-        filters: `resource=${assetId}`,
-        select:
-          "id,name,resource,parent,templateType,scorePercent,totalScore,fullScore," +
-          "totalFindings,totalFindingsClosed,totalQuestion,totalAnswered," +
-          "responseStatus,status,actualWorkEnd,scheduledWorkStart,createdTime",
-        page_size: 100,
-      });
-      rows = res.data || [];
+      calculated = String((JSON.parse(String(aRows[0].evidence_json || "{}")) || {}).narrative_block || "");
     } catch (e) {
-      error = String(e);
+      calculated = "";
+    }
+    if (!calculated) throw new Error(`asset ${assetId} has no stored calculated results — re-run assess`);
+
+    const assetRes = await cmms("get-asset", { id: assetId });
+    const facts = assetFacts(assetId, assetRes.data || assetRes);
+
+    // Section 3: the photo agent's issues, counts already corrected by save-analysis.
+    const { rows: anRows } = db.query(
+      "select analysis_json from risk_analyses where asset_id = $1 and asset_id <> 0 order by analyzed_at desc limit 1",
+      [assetId]
+    );
+    let photoLines: string[] = ["no photo analysis stored for this asset"];
+    if (anRows.length > 0) {
+      try {
+        const an = JSON.parse(String(anRows[0].analysis_json || "{}"));
+        const issues = (an.recurring_issues || []).slice(0, 8);
+        if (issues.length > 0) {
+          photoLines = issues.map(
+            (i: any) =>
+              `${i.display_name || i.issue}: ${num(i.occurrence_count)} corrective work orders, severity ${
+                i.severity?.overall || "unknown"
+              }, trend ${i.trend || "insufficient_evidence"}`
+          );
+        }
+        const dq = an.data_quality || {};
+        if (dq.assessment_limited) {
+          photoLines.push(`data_quality: ${(dq.limitations || []).join("; ") || "assessment limited"}`);
+        }
+      } catch (e) {
+        photoLines = ["photo analysis could not be read"];
+      }
     }
 
-    if (error) {
-      return {
-        stream: missing<string>(`inspection lookup failed: ${error.slice(0, 160)}`),
-        inspections: [],
-      };
-    }
-    if (rows.length === 0) {
-      return {
-        stream: missing<string>("no inspections exist for this asset"),
-        inspections: [],
-        grade_index: missing<number>("no inspections exist for this asset", 0),
-        trajectory: [],
-        open_findings: missing<number>("no inspections exist for this asset", 0),
-      };
-    }
-
-    // Only completed inspections may inform a condition grade.
-    const done = rows.filter((r) => {
-      const s = String(r.responseStatus || r.status || "").toLowerCase();
-      return s === "" || s.indexOf("complete") >= 0 || s.indexOf("submit") >= 0 || s.indexOf("closed") >= 0;
-    });
-    const usable = done.filter((r) => num(r.scorePercent) > 0 || num(r.totalScore) > 0);
-
-    if (usable.length === 0) {
-      return {
-        stream: missing<string>(
-          `${rows.length} inspection(s) found but none is complete with a score`
-        ),
-        inspections: rows.length,
-        grade_index: missing<number>("no completed, scored inspection", rows.length),
-        trajectory: [],
-        open_findings: missing<number>("no completed, scored inspection", rows.length),
-      };
+    // Section 4: the inspector's own words, closed inspections only.
+    const inspections = await coreInspections(assetId);
+    const inspectionLines: string[] = [];
+    if (inspections.length === 0) {
+      inspectionLines.push("No closed inspection exists for this asset. Report zero inspections reviewed.");
+    } else {
+      for (const ins of inspections) {
+        inspectionLines.push(`inspection ${ins.inspection_id} "${ins.name}" · ${ins.event_date}`);
+        for (const a of ins.answers) {
+          inspectionLines.push(`  answer ${a.answer_id} [${a.question_type}] "${a.question}":`);
+          if (a.answer_value) inspectionLines.push(`    answered: ${a.answer_value}`);
+          if (a.text) inspectionLines.push(`    "${a.text}"`);
+          if (a.comments) inspectionLines.push(`    remarks: "${a.comments}"`);
+        }
+      }
     }
 
-    const traj = usable
-      .map((r) => {
-        const pct =
-          num(r.scorePercent) > 0
-            ? num(r.scorePercent)
-            : num(r.fullScore) > 0
-            ? (num(r.totalScore) / num(r.fullScore)) * 100
-            : 0;
-        return {
-          inspection_id: num(r.id),
-          date: String(r.actualWorkEnd || r.scheduledWorkStart || r.createdTime || "").slice(0, 10),
-          score_percent: round(pct, 1),
-          // A high score means good condition, so invert onto the 1..5 worst-is-5 scale.
-          grade: round(1 + (100 - clamp(pct, 0, 100)) / 25, 2),
-          findings: num(r.totalFindings),
-          findings_closed: num(r.totalFindingsClosed),
-          template_type: String(r.templateType || ""),
-        };
-      })
-      .sort((a, b) => (a.date < b.date ? -1 : 1));
-
-    const latest = traj[traj.length - 1];
-    const open = traj.reduce((a, t) => a + Math.max(t.findings - t.findings_closed, 0), 0);
+    const ev = categoryEvidence(db, category);
+    const input = [
+      "MODE: ASSESS-AND-EXPLAIN",
+      "",
+      "=== 1. ASSET ===",
+      `asset_id: ${facts.asset_id}`,
+      `name: ${facts.asset_name} · category: ${category}`,
+      `manufacturer: ${facts.manufacturer || "unknown"} · model: ${facts.model || "unknown"}`,
+      `location: ${facts.location || "unknown"}`,
+      "",
+      "=== 2. CALCULATED RESULTS (number-locked — introduce no figure absent here) ===",
+      calculated,
+      "",
+      "=== 3. PHOTO ANALYSIS (counts already corrected by the engine) ===",
+      ...photoLines,
+      "",
+      "=== 4. INSPECTIONS (closed only, the inspector's own words) ===",
+      ...inspectionLines,
+      "",
+      "=== 5. BASELINE REQUEST ===",
+      `asset_category: ${category}`,
+      `manufacturer: ${facts.manufacturer || "(not recorded)"} · model: ${facts.model || "(not recorded)"}`,
+      `currency: USD`,
+      `region: India`,
+      `corrective_volume: ${ev.volume}`,
+      `priority_mix: ${ev.mix}`,
+    ].join("\n");
 
     return {
-      stream: have("available"),
-      inspections: rows.length,
-      completed: usable.length,
-      grade_index: have(latest.grade, usable.length),
-      trajectory: traj,
-      open_findings: have(open, usable.length),
+      mode: "full",
+      asset_id: assetId,
+      category,
+      input,
+      block: calculated,
+      answers: inspections,
+      inspection_count: inspections.length,
     };
   },
 });
 
-/* ------------------------------------------------------------------ *
- * save-narrative — store the condition-assessment agent's prose after
- * enforcing the number lock.
- *
- * The agent may only restate figures it was given. Any other numeric token means
- * the reply is discarded in favour of the deterministic narrative, because a
- * plausible invented figure is worse than a plain one.
- * ------------------------------------------------------------------ */
-
 server.addHandler({
-  name: "save-narrative",
+  name: "save-core",
   description:
-    "Validate and store the condition-assessment agent's explanation. Rejects any reply containing a number absent from the input block it was given.",
+    "Validate and store the condition-core agent's single reply: number lock on the prose, quote lock on every inspection claim, clamps on the baselines. Writes inspection findings, which reach the condition score on the next assess.",
   parameters: {
-    assetId: { description: "Facilio asset id", type: "number" },
-    block: { description: "The exact input block the agent was given", type: "string" },
+    assetId: { description: "Facilio asset id; omit for a baselines-only reply", type: "number" },
+    category: { description: "Asset category; required when assetId is omitted", type: "string" },
+    block: { description: "The CALCULATED RESULTS section the agent was given", type: "string" },
+    answers: { description: "The inspections/answers core-input returned, stringified", type: "string" },
     reply: { description: "The agent's JSON reply, stringified", type: "string" },
   },
   execute: async (args) => {
-    const assetId = num(args.assetId);
-    if (!assetId) throw new Error("assetId is required");
-    const block = String(args.block || "");
     let reply: any;
     try {
       reply = JSON.parse(String(args.reply || "{}"));
     } catch (e) {
       throw new Error("reply must be valid JSON");
     }
+    const db = conn();
+    const now = nowIso();
 
-    // Every number in the reply must appear in the block. Compare on digit runs so
-    // "1.8" and "1.8 years" both match, and strip thousands separators first.
+    /* ---- Baselines: clamped identically wherever they land ---- */
+    const b = reply?.baselines || {};
+    const life = num(b?.expected_life_years?.value);
+    let crit = String(b?.criticality?.value || "medium");
+    if (["low", "medium", "high"].indexOf(crit) === -1) crit = "medium";
+    const repair = Math.max(num(b?.avg_repair_cost?.value), 0);
+    const replacement = Math.max(num(b?.replacement_cost?.value), 0);
+    // A cost figure without a customer rate card cannot be trusted above 0.6,
+    // whatever the model claims.
+    const confLife = clamp(num(b?.expected_life_years?.confidence), 0, 1);
+    const confCrit = clamp(num(b?.criticality?.confidence), 0, 1);
+    const confRepair = clamp(num(b?.avg_repair_cost?.confidence), 0, 0.6);
+    const confReplacement = clamp(num(b?.replacement_cost?.confidence), 0, 0.6);
+    const basisJson = JSON.stringify({
+      expected_life_years: b?.expected_life_years?.basis || [],
+      criticality: b?.criticality?.basis || [],
+      avg_repair_cost: b?.avg_repair_cost?.basis || [],
+      replacement_cost: b?.replacement_cost?.basis || [],
+      capacity_inferred: b?.replacement_cost?.capacity_inferred || "",
+      currency: b?.replacement_cost?.currency || "USD",
+    });
+    const assumptionsJson = JSON.stringify({
+      expected_life_years: b?.expected_life_years?.assumptions || [],
+      criticality: b?.criticality?.assumptions || [],
+      avg_repair_cost: b?.avg_repair_cost?.assumptions || [],
+      replacement_cost: b?.replacement_cost?.assumptions || [],
+    });
+
+    /* ---- Baselines-only mode: the Baselines page writes the category row ---- */
+    const assetId = num(args.assetId);
+    if (!assetId) {
+      const category = String(args.category || "").trim();
+      if (!category) throw new Error("assetId or category is required");
+      const { rows: hit } = db.query("select source from baselines where category = $1 limit 1", [category]);
+      if (hit.length > 0 && String(hit[0].source) === "override") {
+        return { ok: true, category, skipped: "a human override is in place" };
+      }
+      if (hit.length > 0) {
+        db.query(
+          `update baselines set expected_life_years = $1, avg_repair_cost = $2, replacement_cost = $3,
+             criticality = $4, source = 'ai_estimate', conf_life = $5, conf_criticality = $6,
+             conf_repair = $7, conf_replacement = $8, basis_json = $9, assumptions_json = $10,
+             estimated_at = $11 where category = $12`,
+          [life, repair, replacement, crit, confLife, confCrit, confRepair, confReplacement,
+           basisJson, assumptionsJson, now, category]
+        );
+      } else {
+        db.query(
+          `insert into baselines
+             (category, expected_life_years, avg_repair_cost, replacement_cost, criticality, source,
+              conf_life, conf_criticality, conf_repair, conf_replacement, basis_json, assumptions_json, estimated_at)
+           values ($1,$2,$3,$4,$5,'ai_estimate',$6,$7,$8,$9,$10,$11,$12)`,
+          [category, life, repair, replacement, crit, confLife, confCrit, confRepair, confReplacement,
+           basisJson, assumptionsJson, now]
+        );
+      }
+      return {
+        ok: true,
+        category,
+        expected_life_years: life,
+        criticality: crit,
+        avg_repair_cost: repair,
+        replacement_cost: replacement,
+        low_confidence: confRepair < 0.6 || confReplacement < 0.6,
+      };
+    }
+
+    /* ---- The number lock, over the prose sections only ---- *
+     * `baselines` is exempt by design: it is the one section the agent is ASKED to
+     * produce figures for. Everything in narrative and cross_stream must restate a
+     * figure the engine already calculated. Compare on digit runs so "1.8" and
+     * "1.8 years" both match, and strip thousands separators first.                */
+    const block = String(args.block || "");
     const norm = (s: string) => s.replace(/,(?=\d{3}\b)/g, "");
     const digits = (s: string) => (norm(s).match(/\d+(?:\.\d+)?/g) || []);
     const allowed: Record<string, boolean> = {};
     for (const d of digits(block)) allowed[d] = true;
-
-    const prose = JSON.stringify(reply);
+    const prose = JSON.stringify(reply?.narrative || {}) + JSON.stringify(reply?.cross_stream || {});
     const unseen: string[] = [];
     for (const d of digits(prose)) {
       if (!allowed[d] && unseen.indexOf(d) === -1) unseen.push(d);
     }
-
     const accepted = unseen.length === 0;
-    const db = conn();
+
+    /* ---- The quote lock ---- *
+     * The engine can re-read the inspector's text, so unlike a photograph it can
+     * check the claim. Every observation must cite a span that is actually there;
+     * one that is not is dropped rather than stored as an inspector's words.       */
+    let answerText: Record<string, string> = {};
+    try {
+      for (const ins of JSON.parse(String(args.answers || "[]"))) {
+        for (const a of ins.answers || []) {
+          answerText[String(a.answer_id)] = `${a.text || ""} ${a.comments || ""}`;
+        }
+      }
+    } catch (e) {
+      answerText = {};
+    }
+    const flatten = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+    const MIN_QUOTE_CHARS = 12;
+    const quoted = (answerId: string, quote: string) => {
+      const q = flatten(String(quote || ""));
+      if (q.length < MIN_QUOTE_CHARS) return false;
+      const src = flatten(answerText[String(answerId)] || "");
+      return src.length > 0 && src.indexOf(q) >= 0;
+    };
+
+    const ia = reply?.inspection_analysis || {};
+    const observations: any[] = Array.isArray(ia.observations) ? ia.observations : [];
+    const unquoted: string[] = [];
+    const kept: any[] = [];
+    for (const o of observations) {
+      const issue = String(o?.type || "");
+      if (ISSUE_CODES.indexOf(issue) === -1) {
+        unquoted.push(`unknown issue_code "${issue}"`);
+        continue;
+      }
+      if (!quoted(String(o?.answer_id || ""), String(o?.quote || ""))) {
+        unquoted.push(`${issue}: quote not found in answer ${o?.answer_id}`);
+        continue;
+      }
+      kept.push(o);
+    }
+
+    /* ---- Store surviving observations as inspection findings ---- *
+     * `wo_id` carries the inspection id and `attachment_id` the answer id: the app
+     * database allows no DDL, so these two columns are overloaded. Every corrective
+     * query is scoped by `source` to keep them apart — see isCorrectiveEvidence.   */
+    const dateByInspection: Record<string, string> = {};
+    try {
+      for (const ins of JSON.parse(String(args.answers || "[]"))) {
+        dateByInspection[String(ins.inspection_id)] = String(ins.event_date || "");
+      }
+    } catch (e) {
+      /* dates stay empty; the stream then has nothing to order by */
+    }
+
+    let id = nextId(db, "findings");
+    let inserted = 0;
+    let duplicates = 0;
+    for (const o of kept) {
+      const answerId = num(o.answer_id);
+      const inspectionId = num(o.inspection_id);
+      const issue = String(o.type);
+      let severity = String(o.severity || "unknown");
+      if (SEV_ORDER.indexOf(severity) === -1) severity = "unknown";
+
+      const { rows: dup } = db.query(
+        `select 1 as hit from findings
+          where asset_id = $1 and attachment_id = $2 and issue_code = $3 and source = 'inspection' limit 1`,
+        [assetId, answerId, issue]
+      );
+      if (dup.length > 0) {
+        duplicates++;
+        continue;
+      }
+
+      db.query(
+        `insert into findings
+           (id, asset_id, wo_id, attachment_id, source, issue_code, component, location,
+            severity, confidence, extent_percent, evidence, photo_file_id, photo_usable,
+            photo_quality_score, asset_type_match, component_match, event_date, created_at)
+         values ($1,$2,$3,$4,'inspection',$5,$6,$7,$8,$9,0,$10,0,1,0,'uncertain','uncertain',$11,$12)`,
+        [
+          id++,
+          assetId,
+          inspectionId,
+          answerId,
+          issue,
+          String(o.component || "unspecified"),
+          String(o.location || ""),
+          severity,
+          clamp(num(o.confidence), 0, 1),
+          JSON.stringify([
+            `Inspection ${inspectionId}, answer ${answerId}: "${String(o.quote || "").slice(0, 300)}"`,
+            "Inspector-observed condition, not a photograph and not a corrective work order.",
+          ]),
+          dateByInspection[String(o.inspection_id)] || "",
+          now,
+        ]
+      );
+      inserted++;
+    }
+
+    /* ---- Persist onto the assessment's evidence blob ---- */
     const { rows } = db.query("select evidence_json from assessments where asset_id = $1 limit 1", [assetId]);
     if (rows.length === 0) throw new Error(`no assessment stored for asset ${assetId}`);
-
     let evidence: any = {};
     try {
       evidence = JSON.parse(String(rows[0].evidence_json || "{}"));
@@ -2957,24 +3337,59 @@ server.addHandler({
     }
 
     evidence.narrative = accepted
-      ? {
-          ...reply,
-          source: "condition_assessment_agent",
-          generated_at: nowIso(),
-        }
+      ? { ...(reply.narrative || {}), source: "condition_core_agent", generated_at: now }
       : {
           source: "rejected_agent_reply",
           rejected_because: `reply contained figures absent from its input: ${unseen.join(", ")}`,
-          generated_at: nowIso(),
+          generated_at: now,
         };
     evidence.narrative_number_lock = { accepted, unseen_figures: unseen };
+    evidence.cross_stream = accepted ? reply.cross_stream || null : null;
+    evidence.inspection_observations = {
+      inspections_reviewed: num(ia.inspections_reviewed),
+      kept: kept.length,
+      confirms_good_condition: ia.confirms_good_condition === true,
+      operability: ia.operability || null,
+      repair_effectiveness: Array.isArray(ia.repair_effectiveness)
+        ? ia.repair_effectiveness.filter((r: any) => quoted(String(r?.answer_id || ""), String(r?.quote || "")) || !r?.quote)
+        : [],
+      observations: kept,
+    };
+    evidence.quote_lock = { kept: kept.length, unquoted };
+    // Read by baselineFor on the NEXT assess — this reply cannot change the score it
+    // was asked to explain, only the one after it.
+    evidence.baselines_sample = {
+      expected_life_years: life,
+      avg_repair_cost: repair,
+      replacement_cost: replacement,
+      criticality: crit,
+      conf_life: confLife,
+      conf_criticality: confCrit,
+      conf_repair: confRepair,
+      conf_replacement: confReplacement,
+      basis_json: basisJson,
+      assumptions_json: assumptionsJson,
+      estimated_at: now,
+    };
 
     db.query("update assessments set evidence_json = $1 where asset_id = $2", [
       JSON.stringify(evidence),
       assetId,
     ]);
 
-    return { ok: true, accepted, unseen_figures: unseen, asset_id: assetId };
+    return {
+      ok: true,
+      asset_id: assetId,
+      accepted,
+      unseen_figures: unseen,
+      observations_kept: kept.length,
+      observations_unquoted: unquoted,
+      inspection_findings_inserted: inserted,
+      inspection_findings_duplicate: duplicates,
+      expected_life_years: life,
+      criticality: crit,
+      low_confidence: confRepair < 0.6 || confReplacement < 0.6,
+    };
   },
 });
 

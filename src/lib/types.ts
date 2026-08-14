@@ -30,7 +30,11 @@ export interface DominantMtbf extends MtbfBlock {
 }
 
 export interface Baselines {
-  source: "actuals" | "override" | "ai_estimate" | "configured" | "fallback";
+  /**
+   * Which tier resolved these numbers. `asset_sample` is this asset's own
+   * condition-core reply; `ai_estimate` is the shared category row it falls back to.
+   */
+  source: "actuals" | "override" | "asset_sample" | "ai_estimate" | "configured" | "fallback";
   expected_life_years: number;
   avg_repair_cost: number;
   replacement_cost: number;
@@ -58,6 +62,42 @@ export interface Narrative {
   source: string;
   generated_at: string;
   rejected_because?: string;
+}
+
+/**
+ * The condition-core agent's judgment ACROSS evidence streams — the thing a weighted
+ * mean structurally cannot express. The score can report that the streams average to
+ * 3.23; only this can say that the inspector and the failure record disagree.
+ */
+export interface CrossStream {
+  corroborations: string[];
+  conflicts: string[];
+  repair_effectiveness_note: string;
+  data_gaps: string[];
+  confidence_in_recommendation: "high" | "medium" | "low";
+  what_would_change_this: string[];
+}
+
+/** One inspector observation that survived the quote lock. */
+export interface InspectionObservation {
+  type: string;
+  severity: string;
+  confidence: number;
+  component: string;
+  location: string;
+  /** The verbatim span of the inspector's answer this claim was taken from. */
+  quote: string;
+  inspection_id: string;
+  answer_id: string;
+}
+
+export interface InspectionEvidence {
+  inspections_reviewed: number;
+  kept: number;
+  confirms_good_condition: boolean;
+  operability: { value: string; quote: string } | null;
+  repair_effectiveness: Array<{ issue: string; verdict: string; quote: string }>;
+  observations: InspectionObservation[];
 }
 
 export interface BaselineRow {
@@ -225,6 +265,12 @@ export interface Evidence {
   unavailable?: Unavailable[];
   narrative?: Narrative;
   narrative_number_lock?: { accepted: boolean; unseen_figures: string[] };
+  cross_stream?: CrossStream | null;
+  inspection_observations?: InspectionEvidence;
+  /** Claims the agent could not point to in the inspector's actual words. */
+  quote_lock?: { kept: number; unquoted: string[] };
+  inspection_basis?: string;
+  inspection_observations_used?: number;
 }
 
 export interface Assessment {
@@ -274,7 +320,7 @@ export interface Finding {
    * from Facilio; `photo_manual` means an operator supplied the file because Facilio's
    * attachment URL is not readable from a browser. Both analyse the same attachment id.
    */
-  source: "photo" | "photo_manual" | "wo_text" | "inspection";
+  source: "photo" | "photo_manual" | "photo_unusable" | "wo_text" | "inspection";
   issue_code: string;
   issue_label: string;
   component: string;
