@@ -7,6 +7,7 @@ import { Empty, ErrorBanner, GapList, LifecycleBar, MtbfBars, Provenance, Spark,
 import { DetailShell, RailFact, type DetailTab } from "../components/DetailShell";
 import { Card, CardTitle, CardNote } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { PhotoEvidence } from "../components/PhotoEvidence";
 import {
   StatusTag,
   gradeTone,
@@ -163,13 +164,18 @@ export function AssetDetail({ assetId }: { assetId: number }) {
   const [error, setError] = useState("");
   const [tab, setTab] = useState<TabKey>("overview");
 
+  /** Reload without resetting the tab, so supplying photo evidence keeps you in place. */
+  function load() {
+    fn<Detail>("asset-detail", { assetId })
+      .then(setD)
+      .catch((e) => setError(String(e?.message || e)));
+  }
+
   useEffect(() => {
     setD(null);
     setError("");
     setTab("overview");
-    fn<Detail>("asset-detail", { assetId })
-      .then(setD)
-      .catch((e) => setError(String(e?.message || e)));
+    load();
   }, [assetId]);
 
   const a = d?.assessment;
@@ -182,7 +188,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
   const scope = an?.analysis_scope;
   const mismatches = d?.engine_overrides?.count_mismatches || [];
   const findings = d?.findings ?? [];
-  const photoFindings = findings.filter((f) => f.source === "photo");
+  const photoFindings = findings.filter((f) => f.source === "photo" || f.source === "photo_manual");
   const textFindings = findings.filter((f) => f.source === "wo_text");
 
   // Prefer the dominant issue's own interval series — it answers whether that specific problem is
@@ -816,6 +822,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
       {/* ══════════════════════════════════════════════════════════ evidence */}
       {tab === "evidence" && (
         <>
+          <PhotoEvidence assetId={assetId} onDone={load} />
           <div
             style={{
               display: "grid",

@@ -436,7 +436,7 @@ server.addHandler({
 
     const db = conn();
     const { rows: cachedRows } = db.query(
-      "select distinct attachment_id from findings where asset_id = $1 and source = 'photo' and attachment_id <> 0",
+      "select distinct attachment_id from findings where asset_id = $1 and source in ('photo','photo_manual') and attachment_id <> 0",
       [assetId]
     );
     const cached: number[] = cachedRows.map((r: any) => num(r.attachment_id));
@@ -634,10 +634,15 @@ server.addHandler({
         'JSON string: {"findings":[{wo_id,attachment_id,issue_code,component,location,severity,confidence,extent_percent,evidence:[],photo_file_id,photo_usable,photo_quality_score,asset_type_match,component_match,event_date}]}',
       type: "string",
     },
+    provenance: {
+      description: "How the image bytes reached the app: 'api' (read live from Facilio) or 'upload' (operator supplied)",
+      type: "string",
+    },
   },
   execute: async (args) => {
     const assetId = num(args.assetId);
     if (!assetId) throw new Error("assetId is required");
+    const provenance = String(args.provenance || "api") === "upload" ? "upload" : "api";
     let parsed: any;
     try {
       parsed = JSON.parse(String(args.payload || "{}"));
@@ -663,7 +668,12 @@ server.addHandler({
         rejected.push(`unknown issue_code "${issue}"`);
         continue;
       }
-      const source = unusable ? "photo_unusable" : "photo";
+      // Photo evidence is tagged by how the bytes reached the app, not just that it
+      // is photo evidence. `photo` means read live from Facilio; `photo_manual` means
+      // an operator supplied the file because Facilio's URL is unreadable from a
+      // browser. Both are analyses of the same attachment id, but the register should
+      // never blur where the image came from.
+      const source = unusable ? "photo_unusable" : provenance === "upload" ? "photo_manual" : "photo";
       const attachmentId = num(f.attachment_id);
       const woId = num(f.wo_id);
       if (!woId) {
@@ -967,7 +977,7 @@ function computeStats(db: any, assetId: number, totalCorrective: number) {
   components.sort((a, b) => b.corrective_work_order_count - a.corrective_work_order_count);
 
   /* ---- data quality (spec DATA QUALITY section) ---- */
-  const photoFindings = findings.filter((f) => f.source === "photo");
+  const photoFindings = findings.filter((f) => f.source === "photo" || f.source === "photo_manual");
   const photoWos: number[] = [];
   for (const f of photoFindings) if (photoWos.indexOf(f.wo_id) === -1) photoWos.push(f.wo_id);
   const usableAtt: number[] = [];
@@ -1440,7 +1450,10 @@ server.addHandler({
     // that stream "photo_severity" would imply the score was visually corroborated
     // when nothing was ever seen.
     let sevPhotoBacked = 0;
-    for (const r of sevWoRows) if (String(r.source) === "photo") sevPhotoBacked++;
+    for (const r of sevWoRows) {
+      const s = String(r.source);
+      if (s === "photo" || s === "photo_manual") sevPhotoBacked++;
+    }
     const sevStreamName =
       sevPhotoBacked === 0
         ? "wo_text_severity"
@@ -2323,6 +2336,67 @@ server.addHandler({
 });
 
 server.addHandler({
+  name: "unread-photos",
+  description:
+    "List the BEFORE photos on this asset's corrective work orders that have no findings yet — what an operator would need to supply while Facilio's attachment URLs stay unreadable from a browser.",
+  parameters: {
+    assetId: { description: "Facilio asset id", type: "number" },
+  },
+  execute: async (args) => {
+    const assetId = num(args.assetId);
+    if (!assetId) throw new Error("assetId is required");
+
+    const woRes = await cmms("list-work-orders", {
+      filters: `resource=${assetId}&type=Corrective,Breakdown`,
+      select: "id,subject,scheduledStart,createdTime,noOfAttachments",
+      page_size: 200,
+    });
+    const wos: any[] = woRes.data || [];
+
+    const db = conn();
+    const { rows: done } = db.query(
+      "select distinct attachment_id from findings where asset_id = $1 and attachment_id <> 0",
+      [assetId]
+    );
+    const analyzed: number[] = done.map((r: any) => num(r.attachment_id));
+
+    const pending: any[] = [];
+    let total = 0;
+    for (const wo of wos) {
+      // noOfAttachments is populated in this org, so work orders with no files cost
+      // nothing to skip.
+      if (num(wo.noOfAttachments) === 0) continue;
+      let atts: any[] = [];
+      try {
+        const r = await cmms("list-workorder-attachments", {
+          work_order_id: num(wo.id),
+          attachment_type: "before",
+        });
+        atts = r.data || [];
+      } catch (e) {
+        continue;
+      }
+      for (const a of atts) {
+        total++;
+        const attachmentId = num(a.id);
+        if (analyzed.indexOf(attachmentId) >= 0) continue;
+        pending.push({
+          attachment_id: attachmentId,
+          wo_id: num(wo.id),
+          wo_subject: String(wo.subject || ""),
+          wo_date: String(wo.scheduledStart || wo.createdTime || "").slice(0, 10),
+          filename: String(a.fileName || ""),
+          size: num(a.fileSize),
+          content_type: String(a.contentType || "image/jpeg"),
+        });
+      }
+    }
+
+    return { asset_id: assetId, before_photos_total: total, analyzed: total - pending.length, pending };
+  },
+});
+
+server.addHandler({
   name: "purge-photo-findings",
   description:
     "Delete every photo-derived finding and every stored agent photo reply, across all assets. Used when photo evidence must be re-established from live Facilio data only.",
@@ -2332,7 +2406,7 @@ server.addHandler({
     // Both sources go: `photo` carried the defects, `photo_unusable` recorded photos
     // that yielded none. Neither can be reproduced from live data at present, so
     // leaving either behind would show visual evidence the app cannot obtain.
-    const findings = db.query("delete from findings where source in ('photo', 'photo_unusable')");
+    const findings = db.query("delete from findings where source in ('photo', 'photo_manual', 'photo_unusable')");
     const analyses = db.query("delete from photo_analysis");
     return {
       ok: true,

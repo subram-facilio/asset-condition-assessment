@@ -436,6 +436,105 @@ export async function runPipeline(assetId: number, emit: Emit): Promise<Pipeline
 
 /* ------------------------------------------------------------------ */
 
+/** One before-photo an operator has supplied, matched to its Facilio attachment. */
+export interface SuppliedPhoto {
+  attachment_id: number;
+  wo_id: number;
+  wo_subject: string;
+  wo_date: string;
+  filename: string;
+  content_type: string;
+  file: File;
+}
+
+/**
+ * Analyse before-photos supplied by an operator.
+ *
+ * This exists because Facilio's attachment URLs cannot be read from a browser, so the
+ * app cannot obtain the bytes itself. The operator provides the same files; each is
+ * still tied to its real Facilio `attachment_id`, and the findings are stored under
+ * source `photo_manual` so the register never blurs how the image arrived.
+ *
+ * Always one agent run per work order, never per photo — that is what keeps three
+ * photos of one rust patch counting as a single occurrence.
+ *
+ * Afterwards the caller runs `runPipeline`, which finds these findings already stored,
+ * skips the photo stage as cached, and produces the assessment with visual evidence
+ * included.
+ */
+export async function supplyPhotoEvidence(
+  assetId: number,
+  supplied: SuppliedPhoto[],
+  progress: (msg: string) => void
+): Promise<{ woRuns: number; photosAnalysed: number; inserted: number; rejected: string[] }> {
+  if (supplied.length === 0) return { woRuns: 0, photosAnalysed: 0, inserted: 0, rejected: [] };
+
+  progress("Reading the asset's corrective history…");
+  const bundle = await fn<Bundle>("gather", { assetId, maxWos: 40 });
+  const assetCtx = describeAsset(bundle);
+
+  // Group by work order so each run covers exactly one corrective event.
+  const byWo = new Map<number, SuppliedPhoto[]>();
+  for (const p of supplied) {
+    const list = byWo.get(p.wo_id) || [];
+    list.push(p);
+    byWo.set(p.wo_id, list);
+  }
+
+  const groups = Array.from(byWo.entries());
+  let photosAnalysed = 0;
+  const rows: any[] = [];
+
+  for (let i = 0; i < groups.length; i++) {
+    const [woId, photos] = groups[i];
+    const batch = photos.slice(0, AGENT_FILE_CAP);
+
+    progress(`Uploading ${batch.length} photo${batch.length === 1 ? "" : "s"} for work order ${woId}…`);
+    const files: Array<{ attachmentId: number; fileId: number; filename: string }> = [];
+    for (const p of batch) {
+      const stored: any = await vibe.uploadFile(new File([p.file], p.filename, { type: p.content_type || "image/jpeg" }));
+      files.push({ attachmentId: p.attachment_id, fileId: stored.fileId ?? stored.id, filename: p.filename });
+    }
+
+    // A minimal stand-in for the gathered work order: the agent needs the subject,
+    // date and photo order, and `toFindingRows` needs the same shape it already maps.
+    const woStub: GatheredWo = {
+      wo_id: woId,
+      subject: batch[0].wo_subject,
+      description: "",
+      type: "Corrective",
+      status: "",
+      priority: "",
+      event_date: batch[0].wo_date,
+      photos: [],
+      attachmentError: "",
+    };
+
+    progress(`Analyzing work order ${woId} — ${i + 1} of ${groups.length}`);
+    const input = [
+      "MODE: SINGLE WORK ORDER",
+      assetCtx,
+      "",
+      "This is ONE corrective work order. Every attached image is a BEFORE photo of this same work order,",
+      "so each distinct issue you find here has occurrence_count 1 regardless of how many photos show it.",
+      describeWo(woStub, batch.map((p) => p.filename)),
+    ].join("\n");
+
+    const analysis = await runAgent<Analysis>(input, files.map((f) => f.fileId));
+    photosAnalysed += batch.length;
+    rows.push(...toFindingRows(analysis, [{ wo: woStub, files }]));
+  }
+
+  progress(`Storing ${rows.length} finding${rows.length === 1 ? "" : "s"}…`);
+  const saved = await fn<{ inserted: number; rejected: string[] }>("save-findings", {
+    assetId,
+    payload: JSON.stringify({ findings: rows }),
+    provenance: "upload",
+  });
+
+  return { woRuns: groups.length, photosAnalysed, inserted: saved.inserted, rejected: saved.rejected || [] };
+}
+
 function describeAsset(bundle: Bundle): string {
   const a = bundle.asset;
   return [

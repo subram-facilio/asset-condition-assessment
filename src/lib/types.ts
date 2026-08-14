@@ -269,7 +269,12 @@ export interface Assessment {
 export interface Finding {
   wo_id: number;
   attachment_id: number;
-  source: "photo" | "wo_text" | "inspection";
+  /**
+   * How this finding's evidence reached the app. `photo` means the image was read live
+   * from Facilio; `photo_manual` means an operator supplied the file because Facilio's
+   * attachment URL is not readable from a browser. Both analyse the same attachment id.
+   */
+  source: "photo" | "photo_manual" | "wo_text" | "inspection";
   issue_code: string;
   issue_label: string;
   component: string;
