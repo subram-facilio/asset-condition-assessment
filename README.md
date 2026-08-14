@@ -47,7 +47,7 @@ It is enforced three independent ways, so no single failure can break it:
         count(distinct wo_id)                 trend classification
         occurrence rates                                │
         component concentration                         │
-        condition · deterioration             condition-core (gpt-4o)
+        condition · deterioration             condition-core (gpt-5.1)
         RUL · risk · CAPEX                    ─────────────────────────
         recommendation                        the explanation
                      │                        cross-stream judgment
@@ -135,14 +135,25 @@ done
 facilio vibe function run condition-engine cleanup-seed
 ```
 
-The agent is created with the specification as its instructions:
+Each agent is created with its specification as its instructions:
 
 ```bash
 facilio vibe agent create photo-validation \
-  --model-provider openai --model-name gpt-4o \
+  --model-provider openai --model-name gpt-5.1 \
   --instructions "$(cat ./agent-schemas/photo-validation-instructions.txt)" \
   --output-schema-file ./agent-schemas/photo-validation.json
+
+facilio vibe agent create condition-core \
+  --model-provider openai --model-name gpt-5.1 \
+  --instructions "$(cat ./agent-schemas/condition-core-instructions.txt)" \
+  --output-schema-file ./agent-schemas/condition-core.json
 ```
+
+Both run gpt-5.1. The model matters more here than it usually does, because both
+agents are held to constraints a weaker model fails rather than bends: the number
+lock discards an entire reply for one unseen figure, and the quote lock discards any
+inspection claim not found verbatim in the inspector's answer. A model that
+paraphrases "1.8 years" as "roughly two years" loses its whole answer.
 
 ## Known platform limitations
 
