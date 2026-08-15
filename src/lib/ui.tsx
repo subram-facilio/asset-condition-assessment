@@ -168,7 +168,6 @@ export function Provenance({ source, confidence }: { source?: string; confidence
       }}
     >
       {label}
-      {typeof confidence === "number" && confidence > 0 ? ` ${confidence.toFixed(2)}` : ""}
       {low ? " ⚠" : ""}
     </span>
   );
@@ -241,10 +240,12 @@ export function MtbfBars({ gaps, verdict }: { gaps: MtbfGap[]; verdict?: string 
       ))}
       {verdict && (
         <span style={{ font: "var(--text-caption-reg-12)", color: verdictInk }}>
+          {/* Words, not arrows: an arrow here means "interval down", which reads as
+              improvement while meaning the opposite. Red always means bad. */}
           {verdict === "contracting"
-            ? "Contracting — corrective events are arriving faster"
+            ? "Failing faster — the gap between corrective events is shrinking"
             : verdict === "lengthening"
-            ? "Lengthening — corrective events are arriving less often"
+            ? "Failing slower — the gap between corrective events is growing"
             : "Steady — no clear change in interval"}
         </span>
       )}

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
 import { fn, usd } from "../lib/vibe";
 import type { Assessment } from "../lib/types";
-import { Empty, ErrorBanner, pretty, useRoute } from "../lib/ui";
+import { Empty, ErrorBanner, useRoute } from "../lib/ui";
 import PageHeader from "../components/PageHeader";
 import StatCards from "../components/StatCards";
 import type { StatCard } from "../components/StatCards";
@@ -87,37 +87,6 @@ function CellStack({ title, meta }: { title: React.ReactNode; meta?: React.React
         </FText>
       )}
     </div>
-  );
-}
-
-/** MTBF for a row: the mean interval and which way it is moving, or an honest dash. */
-function MtbfCell({ row }: { row: Assessment }) {
-  const mean = row.dominant_issue_mtbf?.mean_months ?? row.mtbf?.mean_months;
-  const verdict = row.dominant_issue_mtbf?.verdict ?? row.mtbf?.verdict;
-
-  if (!mean?.available || mean.value === null) {
-    return <span style={{ color: "var(--colors-text-caption)" }}>—</span>;
-  }
-
-  const contracting = verdict?.available && verdict.value === "contracting";
-  const lengthening = verdict?.available && verdict.value === "lengthening";
-
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-      {mean.value}mo
-      <span
-        style={{
-          color: contracting
-            ? "var(--colors-icon-semantic-red, #d64545)"
-            : lengthening
-            ? "var(--colors-icon-semantic-green)"
-            : "var(--colors-text-caption)",
-          fontWeight: contracting ? 700 : 400,
-        }}
-      >
-        {contracting ? "↓" : lengthening ? "↑" : "→"}
-      </span>
-    </span>
   );
 }
 
@@ -225,7 +194,7 @@ export function Register() {
               {row.asset_name}
             </FText>
           }
-          meta={`${row.category} · ${row.corrective_wo_count} corrective WOs`}
+          meta={row.category}
         />
       ),
     },
@@ -262,33 +231,6 @@ export function Register() {
       ),
     },
     {
-      key: "mtbf",
-      title: "MTBF",
-      width: "120px",
-      disableTooltip: true,
-      render: (_v, row) => <MtbfCell row={row} />,
-    },
-    {
-      key: "deterioration",
-      title: "Deterioration",
-      width: "140px",
-      render: (_v, row) => (
-        <span
-          style={{
-            color:
-              row.deterioration === "accelerating"
-                ? "var(--colors-icon-semantic-red, #d64545)"
-                : row.deterioration === "improving"
-                ? "var(--colors-icon-semantic-green)"
-                : "var(--colors-text-caption)",
-          }}
-        >
-          {row.deterioration === "accelerating" ? "↑ " : row.deterioration === "improving" ? "↓ " : "→ "}
-          {pretty(row.deterioration)}
-        </span>
-      ),
-    },
-    {
       key: "rul_years",
       title: "RUL",
       width: "100px",
@@ -299,20 +241,6 @@ export function Register() {
         ) : (
           `${row.rul_years}y`
         ),
-    },
-    {
-      key: "repair_spend",
-      title: "Repair spend",
-      width: "130px",
-      align: "right",
-      render: (_v, row) => usd(row.repair_spend),
-    },
-    {
-      key: "replacement_cost",
-      title: "Replacement",
-      width: "130px",
-      align: "right",
-      render: (_v, row) => usd(row.replacement_cost),
     },
     {
       key: "capex_priority",

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 /**
  * The app's one status chip, replacing the old `.pill` class.
@@ -53,6 +53,22 @@ export function StatusTag({ tone, children }: { tone: Tone | string; children: R
       {children}
     </span>
   );
+}
+
+/**
+ * The tone ink as inline custom properties, for chart marks that cannot wear the
+ * `.ca-status-tag` pill — mix-bar segments, scatter dots.
+ *
+ * Charts used to carry their own hex table, which drifted from the chips beside them
+ * and only in one theme, because the literals had no dark counterpart. Pair this with
+ * `.ca-tone-fill` (CSS background) or `.ca-tone-mark` (SVG fill) in index.css.
+ */
+export function toneVars(tone: Tone | string): CSSProperties {
+  const key = (tone in TONES ? tone : "mute") as Tone;
+  return {
+    "--ca-ink": TONES[key].ink,
+    "--ca-ink-dark": DARK_TONES[key].ink,
+  } as CSSProperties;
 }
 
 /* ------------------------------------------------------- tone mapping helpers */

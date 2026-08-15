@@ -6,6 +6,7 @@ import type { AssetDetail as Detail, Metric, MtbfGap, Narrative } from "../lib/t
 import { Empty, ErrorBanner, GapList, LifecycleBar, MtbfBars, Provenance, Spark, Val, pretty } from "../lib/ui";
 import { DetailShell, RailFact, type DetailTab } from "../components/DetailShell";
 import { Card, CardTitle, CardNote } from "../components/Card";
+import { Disclosure } from "../components/Disclosure";
 import { EmptyState } from "../components/EmptyState";
 import { PhotoEvidence } from "../components/PhotoEvidence";
 import {
@@ -32,7 +33,7 @@ import {
  * on every tab, so switching should never cost the reader the asset's identity.
  */
 
-type TabKey = "overview" | "findings" | "risk" | "evidence" | "why";
+type TabKey = "overview" | "findings" | "evidence";
 
 /** Two-column grid that collapses to one on a narrow content column. */
 function Split({ children }: { children: ReactNode }) {
@@ -104,6 +105,27 @@ function Kpi({ value, label }: { value: ReactNode; label: ReactNode }) {
         {label}
       </span>
     </Card>
+  );
+}
+
+/** "Show all N" — the release valve on a capped evidence list. */
+function ShowAll({ n, onClick }: { n: number; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        alignSelf: "flex-start",
+        border: "none",
+        background: "transparent",
+        padding: 0,
+        cursor: "pointer",
+        font: "var(--text-body-reg-14)",
+        color: "var(--colors-text-primary-default)",
+      }}
+    >
+      Show all {n}
+    </button>
   );
 }
 
@@ -184,6 +206,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<TabKey>("overview");
+  // Long evidence lists are capped rather than paginated: the first few rows answer
+  // "is there evidence?", and the rest is for someone auditing a specific claim.
+  const [showAllFindings, setShowAllFindings] = useState(false);
+  const [showAllObs, setShowAllObs] = useState(false);
 
   /** Reload without resetting the tab, so supplying photo evidence keeps you in place. */
   function load() {
@@ -238,14 +264,12 @@ export function AssetDetail({ assetId }: { assetId: number }) {
         icon: { group: "webtabs", name: "inspection" },
         badge: an?.recurring_issues.length ?? 0,
       },
-      { key: "risk", label: "Risk & cost", icon: { group: "alert", name: "triangle-warning-filled" } },
       {
         key: "evidence",
         label: "Evidence",
         icon: { group: "webtabs", name: "workorder" },
         badge: findings.length,
       },
-      { key: "why", label: "Why", icon: { group: "action", name: "info" } },
     ],
     [an?.recurring_issues.length, findings.length]
   );
@@ -496,9 +520,6 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 {crossStream.repair_effectiveness_note && (
                   <Qa q="Are past repairs holding" a={crossStream.repair_effectiveness_note} />
                 )}
-                {crossStream.data_gaps?.length > 0 && (
-                  <Qa q="What is missing" a={crossStream.data_gaps.join(" ")} />
-                )}
                 {crossStream.what_would_change_this?.length > 0 && (
                   <Qa q="What would change this" a={crossStream.what_would_change_this.join(" ")} />
                 )}
@@ -587,6 +608,149 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               purchasedYear={String(an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
             />
           </Card>
+
+          {/* Cost sits on the verdict page because it is half the repair-or-replace question.
+              The old "Risk & cost" tab paired it with a Risk card that restated the KPIs above
+              field for field, so only the cost half survived the merge. */}
+          {a && (
+            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
+              <CardTitle icon={{ group: "files", name: "document" }}>Cost basis</CardTitle>
+              <Row label="Corrective spend, last 3 years">{usd(a.repair_spend)}</Row>
+              <Row label="Estimated replacement">{usd(a.replacement_cost)}</Row>
+              <Row label="CAPEX priority" last>
+                {a.capex_priority === "-" ? (
+                  <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
+                    none
+                  </FText>
+                ) : (
+                  <StatusTag tone={priorityTone(a.capex_priority)}>{a.capex_priority}</StatusTag>
+                )}
+              </Row>
+            </Card>
+          )}
+
+          {/* Everything that proves the verdict rather than stating it. Collapsed by default:
+              these are the app's engineering guarantees, and on the surface they read as noise
+              to the person who just wants to know whether to replace a chiller. */}
+          <Disclosure
+            title="How this was computed"
+            subtitle="formulas, risk weights, and what the engine corrected"
+          >
+            {Array.isArray(inputs.streams_used) && inputs.streams_used.length > 0 && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
+                <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>Evidence streams</CardTitle>
+                <CardNote>
+                  The condition score is a weighted mean of the streams that had evidence; absent streams
+                  are not zero-filled, their weight is redistributed across the rest.
+                </CardNote>
+                {(inputs.streams_used as Array<{ name: string; weight: number; value: number }>).map((st) => (
+                  <Row key={st.name} label={pretty(st.name)}>
+                    {st.value} of 5 · weight {st.weight}
+                  </Row>
+                ))}
+              </Card>
+            )}
+
+            {ev?.risk_terms && ev.risk_terms.length > 0 && a && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>
+                  How the risk score is built
+                </CardTitle>
+                <DataGrid
+                  head={
+                    <>
+                      <th style={TABLE_HEAD}>Risk term</th>
+                      <th style={TABLE_HEAD}>Weight</th>
+                      <th style={TABLE_HEAD}>Factor</th>
+                      <th style={TABLE_HEAD}>Contribution</th>
+                    </>
+                  }
+                >
+                  {ev.risk_terms.map((t) => (
+                    <tr key={t.name}>
+                      <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{pretty(t.name)}</td>
+                      <td style={TABLE_CELL}>{t.weight}</td>
+                      <td style={TABLE_CELL}>{t.factor}</td>
+                      <td style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)" }}>
+                        {t.contribution}
+                      </td>
+                    </tr>
+                  ))}
+                </DataGrid>
+                {ev.risk_terms_excluded && ev.risk_terms_excluded.length > 0 && (
+                  <CardNote>
+                    Excluded and reweighted so the remaining terms still total 100:{" "}
+                    {ev.risk_terms_excluded.join("; ")}.
+                  </CardNote>
+                )}
+                {ev.cost_basis && <CardNote>{ev.cost_basis}.</CardNote>}
+              </Card>
+            )}
+
+            {mismatches.length > 0 && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xlarge)" }}>
+                <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>
+                  The engine corrected the photo agent's counts
+                </CardTitle>
+                <CardNote>
+                  Every count is recomputed from distinct work orders, so the agent's own arithmetic never
+                  reaches the record.
+                </CardNote>
+                <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-body-reg-14)", color: "var(--colors-text-description)" }}>
+                  {mismatches.map((m, i) => (
+                    <li key={i}>{m}</li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+
+            {lock && !lock.accepted && (
+              <ErrorBanner>
+                The written explanation was rejected because it contained figures absent from its input:{" "}
+                {lock.unseen_figures.join(", ")}.
+              </ErrorBanner>
+            )}
+
+            {quoteLock && quoteLock.unquoted.length > 0 && (
+              <ErrorBanner>
+                {quoteLock.unquoted.length} inspection claim
+                {quoteLock.unquoted.length === 1 ? " was" : "s were"} discarded because the quoted wording
+                could not be found in the inspector's answer: {quoteLock.unquoted.join("; ")}.
+              </ErrorBanner>
+            )}
+
+            {ev?.formulas && Object.keys(ev.formulas).length > 0 && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+                <CardTitle icon={{ group: "action", name: "info" }}>How each number was derived</CardTitle>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "var(--spacing-container-large)",
+                    padding: "var(--spacing-container-xlarge)",
+                    borderRadius: "var(--border-medium)",
+                    border: "1px solid var(--colors-border-neutral-base-subtler)",
+                    backgroundColor: "var(--colors-background-container)",
+                    fontFamily: "var(--mono)",
+                    fontSize: 12,
+                    lineHeight: 1.7,
+                    color: "var(--colors-text-description)",
+                    overflowX: "auto",
+                  }}
+                >
+                  {Object.entries(ev.formulas).map(([k, v]) => (
+                    <span key={k}>
+                      {k}: {String(v)}
+                    </span>
+                  ))}
+                </div>
+                <CardNote>
+                  The agents read photographs and inspector prose and write the explanation. Every figure
+                  above is computed in TypeScript against SQL, and overwrites whatever an agent returned.
+                </CardNote>
+              </Card>
+            )}
+          </Disclosure>
         </>
       )}
 
@@ -720,14 +884,22 @@ export function AssetDetail({ assetId }: { assetId: number }) {
           <Split>
             {an && an.component_analysis.length > 0 && (
               <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
-                <CardTitle icon={{ group: "setup", name: "customisation" }}>Component concentration</CardTitle>
+                <Disclosure
+                  title="Component concentration"
+                  subtitle="which component carries the most corrective work"
+                  defaultOpen
+                >
+                {/* Short headers and a narrower floor: "Corrective WOs" / "Worst severity"
+                    are nowrap, and at this column width they forced the grid past its
+                    minWidth, scrolling the component names out of view. */}
                 <DataGrid
+                  minWidth={340}
                   head={
                     <>
                       <th style={TABLE_HEAD}>Component</th>
-                      <th style={TABLE_HEAD}>Corrective WOs</th>
+                      <th style={TABLE_HEAD}>WOs</th>
                       <th style={TABLE_HEAD}>Issues</th>
-                      <th style={TABLE_HEAD}>Worst severity</th>
+                      <th style={TABLE_HEAD}>Severity</th>
                     </>
                   }
                 >
@@ -737,11 +909,26 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                       <td style={TABLE_CELL}>{c.corrective_work_order_count}</td>
                       <td style={TABLE_CELL}>{c.issue_count}</td>
                       <td style={TABLE_CELL}>
-                        <StatusTag tone={severityTone(c.highest_severity)}>{c.highest_severity}</StatusTag>
+                        {/* "unknown" is not a missing value — it means no evidence source
+                            graded this component. Saying so beats a grey chip that reads
+                            like the pipeline dropped something. */}
+                        {c.highest_severity === "unknown" ? (
+                          <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                            not graded
+                          </FText>
+                        ) : (
+                          <StatusTag tone={severityTone(c.highest_severity)}>{c.highest_severity}</StatusTag>
+                        )}
                       </td>
                     </tr>
                   ))}
                 </DataGrid>
+                <CardNote>
+                  Severity comes from photographs and inspections. Work-order wording identifies which
+                  issue occurred but never how bad it was, so a component evidenced only by text reads
+                  "not graded" rather than being assigned a severity nobody measured.
+                </CardNote>
+                </Disclosure>
               </Card>
             )}
 
@@ -794,102 +981,6 @@ export function AssetDetail({ assetId }: { assetId: number }) {
       )}
 
       {/* ═════════════════════════════════════════════════════════ risk & cost */}
-      {tab === "risk" && a && (
-        <>
-          <Split>
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
-              <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>Risk</CardTitle>
-              <Row label="Risk score">
-                <StatusTag tone={riskTone(a.risk_level)}>
-                  {a.risk_score} / 100 · {a.risk_level}
-                </StatusTag>
-              </Row>
-              <Row label="Condition">
-                <>
-                  {a.score.toFixed(2)} / 5 <StatusTag tone={gradeTone(a.grade)}>{a.grade}</StatusTag>
-                </>
-              </Row>
-              <Row label="Remaining life">
-                <Val metric={a.rul} suffix=" years" fallbackLabel="unavailable" />
-              </Row>
-              <Row label="Deterioration" last>
-                <StatusTag
-                  tone={a.deterioration === "accelerating" ? "bad" : a.deterioration === "improving" ? "good" : "mute"}
-                >
-                  {pretty(a.deterioration)}
-                </StatusTag>
-              </Row>
-            </Card>
-
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
-              <CardTitle icon={{ group: "files", name: "document" }}>Cost basis</CardTitle>
-              <Row label="Corrective spend, last 3 years">{usd(a.repair_spend)}</Row>
-              <Row label="Estimated replacement">
-                <>
-                  {usd(a.replacement_cost)}
-                  {baselines && (
-                    <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
-                  )}
-                </>
-              </Row>
-              <Row label="CAPEX priority" last>
-                {a.capex_priority === "-" ? (
-                  <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
-                    none
-                  </FText>
-                ) : (
-                  <StatusTag tone={priorityTone(a.capex_priority)}>{a.capex_priority}</StatusTag>
-                )}
-              </Row>
-              <CardNote>
-                {ev?.cost_basis}. This Facilio org holds no work-order cost fields, so figures come from the
-                Baselines page and improve automatically once costs are logged in Facilio.
-              </CardNote>
-            </Card>
-          </Split>
-
-          {ev?.risk_terms && ev.risk_terms.length > 0 && (
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
-              <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>How the risk score is built</CardTitle>
-              <DataGrid
-                head={
-                  <>
-                    <th style={TABLE_HEAD}>Risk term</th>
-                    <th style={TABLE_HEAD}>Weight</th>
-                    <th style={TABLE_HEAD}>Factor</th>
-                    <th style={TABLE_HEAD}>Contribution</th>
-                  </>
-                }
-              >
-                {ev.risk_terms.map((t) => (
-                  <tr key={t.name}>
-                    <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{pretty(t.name)}</td>
-                    <td style={TABLE_CELL}>{t.weight}</td>
-                    <td style={TABLE_CELL}>{t.factor}</td>
-                    <td style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)" }}>
-                      {t.contribution}
-                    </td>
-                  </tr>
-                ))}
-                <tr>
-                  <td colSpan={3} style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)", borderBottom: "none" }}>
-                    Risk score
-                  </td>
-                  <td style={{ ...TABLE_CELL, font: "var(--text-heading-med-14)", color: "var(--colors-text-main)", borderBottom: "none" }}>
-                    {a.risk_score}
-                  </td>
-                </tr>
-              </DataGrid>
-              {ev.risk_terms_excluded && ev.risk_terms_excluded.length > 0 && (
-                <CardNote>
-                  Excluded and reweighted so the remaining terms still total 100: {ev.risk_terms_excluded.join("; ")}.
-                </CardNote>
-              )}
-            </Card>
-          )}
-        </>
-      )}
-
       {/* ══════════════════════════════════════════════════════════ evidence */}
       {tab === "evidence" && (
         <>
@@ -909,7 +1000,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               </CardTitle>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
-                {inspectionEvidence.observations.map((o, i) => (
+                {inspectionEvidence.observations.slice(0, showAllObs ? inspectionEvidence.observations.length : 3).map((o, i) => (
                   <div key={`${o.answer_id}-${o.type}-${i}`} style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-small)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
                       <StatusTag tone={severityTone(o.severity)}>{o.severity}</StatusTag>
@@ -928,6 +1019,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 ))}
               </div>
 
+              {!showAllObs && inspectionEvidence.observations.length > 3 && (
+                <ShowAll n={inspectionEvidence.observations.length} onClick={() => setShowAllObs(true)} />
+              )}
+
               {inspectionEvidence.repair_effectiveness?.length > 0 && (
                 <Qa
                   q="Did the last repair hold"
@@ -945,24 +1040,15 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               </CardNote>
             </Card>
           )}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "var(--spacing-container-xxlarge)",
-            }}
-          >
-            <Kpi
-              value={scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0}
-              label="Corrective work orders"
-            />
-            <Kpi value={scope?.photos_analyzed ?? 0} label="Before photos analysed" />
-            <Kpi value={photoFindings.length} label="Photo-backed findings" />
-            <Kpi value={textFindings.length} label="Text-derived findings" />
-          </div>
+          <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
+            {findings.length} finding{findings.length === 1 ? "" : "s"} from{" "}
+            {scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0} corrective work orders ·{" "}
+            {photoFindings.length} photo-backed · {textFindings.length} text-derived
+            {inspectionEvidence?.kept ? ` · ${inspectionEvidence.kept} inspector-observed` : ""}
+          </FText>
 
           {a?.unavailable && a.unavailable.length > 0 && (
-            <GapList items={a.unavailable} title="Could not be computed" />
+            <GapList items={a.unavailable} title="What this assessment couldn't see" />
           )}
 
           <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
@@ -986,7 +1072,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                   </>
                 }
               >
-                {findings.map((f, i) => (
+                {findings.slice(0, showAllFindings ? findings.length : 10).map((f, i) => (
                   <tr key={i}>
                     <td style={{ ...TABLE_CELL, fontFamily: "var(--mono)", fontSize: 12 }}>#{f.wo_id}</td>
                     <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{f.issue_label}</td>
@@ -1005,80 +1091,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 ))}
               </DataGrid>
             )}
+            {!showAllFindings && findings.length > 10 && (
+              <ShowAll n={findings.length} onClick={() => setShowAllFindings(true)} />
+            )}
           </Card>
-        </>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════════ why */}
-      {tab === "why" && (
-        <>
-          {mismatches.length > 0 && (
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xlarge)" }}>
-              <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>
-                The engine corrected the photo agent's counts
-              </CardTitle>
-              <CardNote>
-                Every count is recomputed from distinct work orders, so the agent's own arithmetic never reaches
-                the record.
-              </CardNote>
-              <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-body-reg-14)", color: "var(--colors-text-description)" }}>
-                {mismatches.map((m, i) => (
-                  <li key={i}>{m}</li>
-                ))}
-              </ul>
-            </Card>
-          )}
-
-          {lock && !lock.accepted && (
-            <ErrorBanner>
-              The written explanation was rejected because it contained figures absent from its input:{" "}
-              {lock.unseen_figures.join(", ")}.
-            </ErrorBanner>
-          )}
-
-          {quoteLock && quoteLock.unquoted.length > 0 && (
-            <ErrorBanner>
-              {quoteLock.unquoted.length} inspection claim
-              {quoteLock.unquoted.length === 1 ? " was" : "s were"} discarded because the quoted wording could
-              not be found in the inspector's answer: {quoteLock.unquoted.join("; ")}.
-            </ErrorBanner>
-          )}
-
-          {ev?.formulas && Object.keys(ev.formulas).length > 0 && (
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
-              <CardTitle icon={{ group: "action", name: "info" }}>How each number was derived</CardTitle>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--spacing-container-large)",
-                  padding: "var(--spacing-container-xlarge)",
-                  borderRadius: "var(--border-medium)",
-                  border: "1px solid var(--colors-border-neutral-base-subtler)",
-                  backgroundColor: "var(--colors-background-container)",
-                  fontFamily: "var(--mono)",
-                  fontSize: 12,
-                  lineHeight: 1.7,
-                  color: "var(--colors-text-description)",
-                  overflowX: "auto",
-                }}
-              >
-                {Object.entries(ev.formulas).map(([k, v]) => (
-                  <span key={k}>
-                    {k}: {v}
-                  </span>
-                ))}
-              </div>
-              <CardNote>
-                The agent reads photographs, judges severity and writes the prose. Every figure above is computed
-                in TypeScript against SQL, and overwrites whatever the agent returned.
-              </CardNote>
-            </Card>
-          )}
-
-          {a?.unavailable && a.unavailable.length > 0 && (
-            <GapList items={a.unavailable} title="What the evidence could not support" />
-          )}
         </>
       )}
     </DetailShell>

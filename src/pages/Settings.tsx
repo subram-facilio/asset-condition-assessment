@@ -6,6 +6,7 @@ import type { BaselineRow } from "../lib/types";
 import { Empty, ErrorBanner, Provenance } from "../lib/ui";
 import { PageShell } from "../components/PageShell";
 import { Card, CardTitle } from "../components/Card";
+import { Disclosure } from "../components/Disclosure";
 import { StatusTag } from "../components/StatusTag";
 import { EmptyState } from "../components/EmptyState";
 
@@ -109,7 +110,7 @@ export function Settings() {
   return (
     <PageShell
       title="Baselines"
-      subtitle="Expected life, criticality and cost per asset category — the four values Facilio has no field for."
+      subtitle="AI-estimated reference values — real Facilio costs and manual overrides always win."
       action={
         missing.length > 0 ? (
           <FButton appearance="primary" size="medium" disabled={!!busy} onButtonClick={estimateMissing}>
@@ -118,15 +119,6 @@ export function Settings() {
         ) : undefined
       }
     >
-      <Card>
-        <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
-          Nothing here needs filling in. These are AI-estimated reference values, each with its basis
-          and a confidence score. Cost figures are deliberately low-confidence because no rate card is
-          available — real costs logged in Facilio replace them automatically, and a manual override
-          beats both.
-        </FText>
-      </Card>
-
       {error && <ErrorBanner>{error}</ErrorBanner>}
 
       {rows.length === 0 ? (
@@ -310,26 +302,6 @@ export function Settings() {
         })
       )}
 
-      <Card>
-        <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>How these are used</CardTitle>
-        <div
-          style={{
-            marginTop: "var(--spacing-container-xlarge)",
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--spacing-container-large)",
-            fontFamily: "var(--mono)",
-            fontSize: 12,
-            lineHeight: 1.6,
-            color: "var(--colors-text-caption)",
-          }}
-        >
-          <span>RUL = max(expected_life − age, 0) × condition factor × (accelerating ? 0.7 : 1)</span>
-          <span>risk includes 20 parts criticality, reweighted when a term is unavailable</span>
-          <span>repair spend = corrective WOs in the last 3 years × average repair cost</span>
-          <span>an in-warranty asset is never recommended for replacement</span>
-        </div>
-      </Card>
     </PageShell>
   );
 }
@@ -410,21 +382,25 @@ function Field({
         <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
           {label}
         </FText>
-        {basisList.length > 0 && (
-          <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
-            {basisList.join(" · ")}
-          </FText>
-        )}
-        {assumptions && assumptions.length > 0 && (
-          <span
-            style={{
-              font: "var(--text-caption-reg-12)",
-              color: "var(--colors-text-caption)",
-              fontStyle: "italic",
-            }}
-          >
-            assumes {assumptions.join("; ")}
-          </span>
+        {(basisList.length > 0 || (assumptions && assumptions.length > 0)) && (
+          <Disclosure title="How this was estimated">
+            {basisList.length > 0 && (
+              <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
+                {basisList.join(" · ")}
+              </FText>
+            )}
+            {assumptions && assumptions.length > 0 && (
+              <span
+                style={{
+                  font: "var(--text-caption-reg-12)",
+                  color: "var(--colors-text-caption)",
+                  fontStyle: "italic",
+                }}
+              >
+                assumes {assumptions.join("; ")}
+              </span>
+            )}
+          </Disclosure>
         )}
         {extra && (
           <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>

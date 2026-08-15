@@ -17,6 +17,19 @@
   --ca-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
 }
 
+/* Background for a selected row in the asset picker. `background-accent-blue-subtle`
+   is a fixed light blue (#cce2ff) in BOTH themes, while every text and chip token
+   flips — so in dark mode a selected row put near-white text and a pale-green grade
+   chip on pale blue, at roughly 2:1 and 1.2:1. Blue-90 is the same "tinted lift off
+   the container" idea rendered for a dark surface, which lets the normal tokens keep
+   working instead of each one needing a hand-picked override. */
+:root {
+  --ca-row-selected-bg: var(--colors-background-accent-blue-subtle);
+}
+:root[data-theme="dark"] {
+  --ca-row-selected-bg: var(--color-blue-90);
+}
+
 /* The design system ships no monospace face, and work-order ids, formulas and
    confidence figures all need one to line up. */
 :root {
@@ -258,3 +271,36 @@ h4 {
   border-color: var(--tag-border-dark);
 }
 
+
+/* Chart marks tinted from the StatusTag tone palette, so a scatter dot and the risk
+   chip beside it can never disagree — and both flip together in dark mode. */
+.ca-tone-fill {
+  background-color: var(--ca-ink);
+}
+:root[data-theme="dark"] .ca-tone-fill {
+  background-color: var(--ca-ink-dark);
+}
+
+/* Four KPI tiles in a row; two columns once the rail stacks below the main column. */
+.ca-kpi-row {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 700px) {
+  .ca-kpi-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Below 700px the fixed 360px rail is wider than the viewport, which pushed the main
+   column off-screen entirely. Stack instead: content first, rail underneath. */
+@media (max-width: 700px) {
+  .ca-dash-layout {
+    flex-direction: column;
+    overflow: auto !important;
+  }
+  .ca-dash-rail {
+    width: 100% !important;
+    border-left: none !important;
+    border-top: 1px solid var(--colors-border-neutral-base-subtler);
+  }
+}

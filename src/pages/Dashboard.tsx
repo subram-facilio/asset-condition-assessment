@@ -8,10 +8,10 @@ import { useUser } from "../context/UserContext";
 import OverlayScrollbar from "../components/OverlayScrollbar";
 import { Card, CardTitle, CardNote } from "../components/Card";
 import { Shimmer } from "../components/Shimmer";
-import { AgentBanner } from "../components/AgentBanner";
 import { EmptyState } from "../components/EmptyState";
 import { RailBlock, RailList, RailRow } from "../components/HomeRail";
-import { StatusTag, gradeTone, priorityTone, recommendationTone, riskTone } from "../components/StatusTag";
+import { StatusTag, gradeTone, priorityTone, riskTone, toneVars } from "../components/StatusTag";
+import { DarkButton } from "../components/Buttons";
 
 /**
  * Portfolio home.
@@ -43,13 +43,18 @@ interface RegisterData {
   register: Assessment[];
 }
 
-/** Condition bands, worst last — the order they appear in the mix bar and its legend. */
+/**
+ * Condition bands, worst last — the order they appear in the mix bar.
+ *
+ * No colours here: they come from `gradeTone` + `toneVars`, the same source the grade
+ * chips use. A private hex table drifted from those chips and had no dark counterpart.
+ */
 const GRADES = [
-  { key: "GOOD", label: "Good", color: "#2f9e5e" },
-  { key: "FAIR", label: "Fair", color: "#7cb342" },
-  { key: "AVERAGE", label: "Average", color: "#e0a127" },
-  { key: "POOR", label: "Poor", color: "#e2723b" },
-  { key: "CRITICAL", label: "Critical", color: "#cf4646" },
+  { key: "GOOD", label: "Good" },
+  { key: "FAIR", label: "Fair" },
+  { key: "AVERAGE", label: "Average" },
+  { key: "POOR", label: "Poor" },
+  { key: "CRITICAL", label: "Critical" },
 ];
 
 function greeting(): string {
@@ -179,30 +184,12 @@ function ConditionMix({ rows, avgScore }: { rows: Assessment[]; avgScore: number
             {slices.map((s) => (
               <div
                 key={s.key}
-                style={{ width: `${s.widthPct}%`, backgroundColor: s.color }}
-                title={`${s.label} — ${s.n} of ${rows.length}`}
+                className="ca-tone-fill"
+                style={{ width: `${s.widthPct}%`, ...toneVars(gradeTone(s.key)) }}
+                title={`${s.label} — ${s.n} of ${rows.length} (${s.pct}%)`}
               />
             ))}
           </div>
-        </div>
-
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px" }}>
-          {slices.map((s) => (
-            <span key={s.key} style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-medium)" }}>
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  backgroundColor: s.color,
-                  flexShrink: 0,
-                }}
-              />
-              <FText appearance="captionReg12" styleProps={{ color: "textDescription" }}>
-                {s.label} {s.pct}%
-              </FText>
-            </span>
-          ))}
         </div>
       </div>
 
@@ -217,22 +204,37 @@ function ConditionMix({ rows, avgScore }: { rows: Assessment[]; avgScore: number
  * Risk against condition. Both axes are computed, so a cluster in the top-right is the set of
  * assets that genuinely need capital planning — not an impression.
  */
-function RiskMatrix({ rows }: { rows: Assessment[] }) {
-  const dotColor = (r: Assessment) =>
-    String(r.risk_level).toUpperCase() === "HIGH"
-      ? "var(--colors-icon-semantic-red, #d64545)"
-      : String(r.risk_level).toUpperCase() === "MEDIUM"
-      ? "var(--colors-icon-semantic-orange)"
-      : "var(--colors-icon-semantic-green)";
+function RiskMatrix({ rows, onOpenRegister }: { rows: Assessment[]; onOpenRegister: () => void }) {
+
 
   return (
     <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
-      <CardTitle icon={{ group: "alert", name: "triangle-warning-filled" }}>Risk against condition</CardTitle>
+      <CardTitle
+        icon={{ group: "alert", name: "triangle-warning-filled" }}
+        action={
+          <button
+            type="button"
+            onClick={onOpenRegister}
+            style={{
+              border: "none",
+              background: "transparent",
+              padding: 0,
+              cursor: "pointer",
+              font: "var(--text-body-reg-14)",
+              color: "var(--colors-text-primary-default)",
+            }}
+          >
+            Open register
+          </button>
+        }
+      >
+        Risk against condition
+      </CardTitle>
 
       <div
         style={{
           position: "relative",
-          height: 220,
+          height: 172,
           borderRadius: "var(--border-medium)",
           border: "1px solid var(--colors-border-neutral-base-subtler)",
           backgroundColor: "var(--colors-background-container)",
@@ -273,6 +275,10 @@ function RiskMatrix({ rows }: { rows: Assessment[] }) {
                 key={r.asset_id}
                 href={`#/asset/${r.asset_id}`}
                 title={`${r.asset_name} — condition ${r.score}, risk ${r.risk_score}`}
+                // Named for screen readers: this scatter is now the only on-page view of
+                // the ranking, so a dot has to say what it is rather than just be red.
+                aria-label={`${r.asset_name}: condition ${r.score}, risk ${r.risk_score}, ${r.risk_level} risk`}
+                className="ca-tone-fill"
                 style={{
                   position: "absolute",
                   left: `${x}%`,
@@ -281,8 +287,8 @@ function RiskMatrix({ rows }: { rows: Assessment[] }) {
                   height: 10,
                   marginLeft: -5,
                   borderRadius: "50%",
-                  backgroundColor: dotColor(r),
                   border: "1.5px solid var(--colors-background-container)",
+                  ...toneVars(riskTone(r.risk_level)),
                 }}
               />
             );
@@ -291,94 +297,17 @@ function RiskMatrix({ rows }: { rows: Assessment[] }) {
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", paddingLeft: 28 }}>
-        {["Good", "Fair", "Average", "Poor"].map((l) => (
+        {["Good", "Fair", "Average", "Poor", "Critical"].map((l) => (
           <FText key={l} appearance="captionReg12" styleProps={{ color: "textCaption" }}>
             {l}
           </FText>
         ))}
       </div>
 
-      <CardNote>Risk (0–100) up, condition (1–5) across. Select a dot to open the asset.</CardNote>
     </Card>
   );
 }
 
-/** Condition ranking — the whole register, worst risk first, as a compact table. */
-function ConditionRanking({ rows, onOpen }: { rows: Assessment[]; onOpen: (id: number) => void }) {
-  const cell: React.CSSProperties = {
-    padding: "var(--spacing-container-large) var(--spacing-container-xlarge)",
-    borderBottom: "1px solid var(--colors-border-neutral-base-subtler)",
-    font: "var(--text-body-reg-14)",
-    color: "var(--colors-text-description)",
-    whiteSpace: "nowrap",
-  };
-  const head: React.CSSProperties = {
-    ...cell,
-    font: "var(--text-heading-med-14)",
-    color: "var(--colors-text-main)",
-    textAlign: "left",
-    backgroundColor: "var(--colors-background-midground-subtle)",
-    position: "sticky",
-    top: 0,
-    zIndex: 1,
-  };
-
-  return (
-    <Card tone="container" style={{ padding: 0, overflow: "hidden" }}>
-      <div style={{ maxHeight: 420, overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
-          <thead>
-            <tr>
-              <th style={head}>Asset</th>
-              <th style={head}>Condition</th>
-              <th style={head}>Risk</th>
-              <th style={head}>RUL</th>
-              <th style={head}>Recommendation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.asset_id}>
-                <td style={cell}>
-                  <button
-                    type="button"
-                    onClick={() => onOpen(r.asset_id)}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      padding: 0,
-                      cursor: "pointer",
-                      font: "var(--text-body-reg-14)",
-                      color: "var(--colors-text-primary-default)",
-                    }}
-                  >
-                    {r.asset_name}
-                  </button>
-                  <div style={{ font: "var(--text-caption-reg-12)", color: "var(--colors-text-caption)" }}>
-                    {r.category} · {r.corrective_wo_count} corrective WOs
-                  </div>
-                </td>
-                <td style={cell}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--spacing-container-large)" }}>
-                    {r.score.toFixed(2)}
-                    <StatusTag tone={gradeTone(r.grade)}>{r.grade}</StatusTag>
-                  </span>
-                </td>
-                <td style={cell}>
-                  <StatusTag tone={riskTone(r.risk_level)}>{r.risk_score}</StatusTag>
-                </td>
-                <td style={cell}>{r.rul?.available === false ? "n/a" : `${r.rul_years}y`}</td>
-                <td style={cell}>
-                  <StatusTag tone={recommendationTone(r.recommendation)}>{r.recommendation}</StatusTag>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
-}
 
 /* -------------------------------------------------------------------- page */
 
@@ -416,22 +345,12 @@ export function Dashboard() {
   const kpis = data?.kpis;
   const loading = !data && !error;
 
-  const accelerating = useMemo(
-    () => register.filter((r) => r.deterioration === "accelerating").length,
-    [register]
-  );
-
   /** Capital queue: anything with a CAPEX priority, most urgent then riskiest first. */
   const capexQueue = useMemo(
     () =>
       register
         .filter((r) => r.capex_priority !== "-")
         .sort((a, b) => a.capex_priority.localeCompare(b.capex_priority) || b.risk_score - a.risk_score),
-    [register]
-  );
-
-  const worstFirst = useMemo(
-    () => register.slice().sort((a, b) => b.risk_score - a.risk_score),
     [register]
   );
 
@@ -458,7 +377,7 @@ export function Dashboard() {
   }
 
   return (
-    <div ref={stageRef} style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+    <div ref={stageRef} className="ca-dash-layout" style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
       {/* ------------------------------------------------------- main column */}
       <OverlayScrollbar edgeFade style={{ flex: 1, minWidth: 0 }}>
         <div
@@ -466,44 +385,52 @@ export function Dashboard() {
             display: "flex",
             flexDirection: "column",
             gap: "var(--spacing-section-small)",
-            padding: "var(--spacing-section-small) var(--spacing-section-medium) var(--spacing-section-medium)",
+            padding: "var(--spacing-section-small) var(--spacing-section-medium) var(--spacing-section-small)",
             maxWidth: 880,
             marginLeft: "auto",
             boxSizing: "border-box",
           }}
         >
-          <div className="ca-si-item" style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-medium)" }}>
-            <span
-              style={{
-                font: "var(--text-heading-smb-20)",
-                fontFamily: "'Roboto Serif', Georgia, serif",
-                lineHeight: "26px",
-                color: "var(--colors-text-description)",
-              }}
-            >
-              {greeting()}, {firstName} 👋
-            </span>
-            <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
-              {loading
-                ? "Reading the condition register…"
-                : `${kpis?.assets_assessed ?? 0} asset${kpis?.assets_assessed === 1 ? "" : "s"} assessed from live Facilio corrective history.`}
-            </FText>
-          </div>
-
-          <div className="ca-si-item">
-            <AgentBanner onRun={() => navigate("/run")} />
+          {/* Greeting and the page's one call to action share a row: the banner that used to
+              carry the CTA was a pitch paragraph over a decorative curve, and the app is better
+              at demonstrating the idea than narrating it. */}
+          <div
+            className="ca-si-item"
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: "var(--spacing-container-xxlarge)",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-medium)", minWidth: 0 }}>
+              <span
+                style={{
+                  font: "var(--text-heading-smb-20)",
+                  fontFamily: "'Roboto Serif', Georgia, serif",
+                  lineHeight: "26px",
+                  color: "var(--colors-text-description)",
+                }}
+              >
+                {greeting()}, {firstName} 👋
+              </span>
+              <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
+                {loading
+                  ? "Reading the condition register…"
+                  : `${kpis?.assets_assessed ?? 0} asset${kpis?.assets_assessed === 1 ? "" : "s"} assessed from live Facilio corrective history.`}
+              </FText>
+            </div>
+            <DarkButton label="Run assessment" icon={{ group: "webtabs", name: "inspection" }} onClick={() => navigate("/run")} />
           </div>
 
           <div className="ca-si-item">
             <Section title="Overview">
-              {/* Fixed 2×2, as the design draws it. `auto-fit` reflowed to 3+1 at ordinary widths,
-                  which reads as three tiles and an orphan rather than four equal figures. */}
+              {/* One row of four. Pinned rather than `auto-fit`, which reflowed to 3+1 and read
+                  as three tiles and an orphan. Stacks to two columns below 700px. */}
               <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                  gap: "var(--spacing-container-xxlarge)",
-                }}
+                className="ca-kpi-row"
+                style={{ display: "grid", gap: "var(--spacing-container-xxlarge)" }}
               >
                 <StatTile
                   icon={{ group: "webtabs", name: "asset" }}
@@ -521,9 +448,9 @@ export function Dashboard() {
                 <StatTile
                   icon={{ group: "chart-data", name: "bar-graph" }}
                   label="Accelerating decay"
-                  value={String(accelerating)}
+                  value={String(kpis?.accelerating_count ?? 0)}
                   loading={loading}
-                  emphasis={accelerating > 0}
+                  emphasis={!!kpis?.accelerating_count}
                 />
                 <StatTile
                   icon={{ group: "files", name: "document" }}
@@ -538,39 +465,11 @@ export function Dashboard() {
           {!loading && (
             <>
               <div className="ca-si-item">
-                <Section title="Insights">
-                  <ConditionMix rows={register} avgScore={kpis?.avg_score ?? 0} />
-                </Section>
+                <ConditionMix rows={register} avgScore={kpis?.avg_score ?? 0} />
               </div>
 
               <div className="ca-si-item">
-                <Section title="Portfolio">
-                  <RiskMatrix rows={register} />
-                </Section>
-              </div>
-
-              <div className="ca-si-item">
-                <Section
-                  title="Condition ranking"
-                  action={
-                    <button
-                      type="button"
-                      onClick={() => navigate("/register")}
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        padding: 0,
-                        cursor: "pointer",
-                        font: "var(--text-body-reg-14)",
-                        color: "var(--colors-text-primary-default)",
-                      }}
-                    >
-                      Open register
-                    </button>
-                  }
-                >
-                  <ConditionRanking rows={worstFirst} onOpen={(id) => navigate(`/asset/${id}`)} />
-                </Section>
+                <RiskMatrix rows={register} onOpenRegister={() => navigate("/register")} />
               </div>
             </>
           )}
@@ -579,6 +478,7 @@ export function Dashboard() {
 
       {/* --------------------------------------------------------- right rail */}
       <aside
+        className="ca-dash-rail"
         style={{
           width: 360,
           flexShrink: 0,
@@ -618,60 +518,6 @@ export function Dashboard() {
               </RailBlock>
             </div>
 
-            <div className="ca-si-item">
-              <RailBlock
-                title="Highest risk"
-                onViewAll={worstFirst.length > 4 ? () => navigate("/register") : undefined}
-              >
-                <RailList
-                  loading={loading}
-                  empty={worstFirst.length === 0}
-                  emptyText="Nothing assessed yet."
-                >
-                  {worstFirst.slice(0, 4).map((r) => (
-                    <RailRow
-                      key={r.asset_id}
-                      href={`#/asset/${r.asset_id}`}
-                      icon={{ group: "webtabs", name: "asset" }}
-                      title={r.asset_name}
-                      meta={
-                        <>
-                          <StatusTag tone={riskTone(r.risk_level)}>{r.risk_score}</StatusTag>
-                          <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                            {r.dominant_issue_label || "no dominant issue"}
-                          </FText>
-                        </>
-                      }
-                    />
-                  ))}
-                </RailList>
-              </RailBlock>
-            </div>
-
-            <div className="ca-si-item">
-              <RailBlock title="Shortcuts">
-                <RailRow
-                  href="#/run"
-                  icon={{ group: "webtabs", name: "inspection" }}
-                  title="Run an assessment"
-                  meta={
-                    <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                      Pick an asset and watch the pipeline
-                    </FText>
-                  }
-                />
-                <RailRow
-                  href="#/settings"
-                  icon={{ group: "action", name: "settings" }}
-                  title="Review baselines"
-                  meta={
-                    <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                      Expected life, criticality and cost
-                    </FText>
-                  }
-                />
-              </RailBlock>
-            </div>
           </div>
         </OverlayScrollbar>
       </aside>

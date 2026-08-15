@@ -252,8 +252,8 @@ function Table<T extends Record<string, any>>({
         }}
       >
         <FEmptystate
-          title="No Plans found"
-          description="There are no plans to display at this moment."
+          title="Nothing to show"
+          description="No rows match the current filters."
           illustration="vendor-onboarding"
           size="M"
           vertical={true}

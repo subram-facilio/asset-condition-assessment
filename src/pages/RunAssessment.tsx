@@ -160,9 +160,7 @@ function AssetOption({
         padding: "var(--spacing-container-large) var(--spacing-container-xlarge)",
         border: "none",
         borderBottom: "1px solid var(--colors-border-neutral-base-subtler)",
-        backgroundColor: selected
-          ? "var(--colors-background-accent-blue-subtle)"
-          : "var(--colors-background-container)",
+        backgroundColor: selected ? "var(--ca-row-selected-bg)" : "var(--colors-background-container)",
         cursor: disabled ? "default" : "pointer",
         font: "inherit",
       }}
@@ -220,6 +218,27 @@ function AssetOption({
 }
 
 /** A small text button for the selection shortcuts, which are links in spirit rather than actions. */
+/**
+ * Band that separates the pinned selection from the rest of the picker. Without
+ * it a row appears to jump for no reason when it is ticked; with it the jump
+ * reads as "it moved into the Selected group".
+ */
+function PickerGroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        padding: "var(--spacing-container-small) var(--spacing-container-xlarge)",
+        borderBottom: "1px solid var(--colors-border-neutral-base-subtler)",
+        backgroundColor: "var(--colors-background-neutral-base-subtle)",
+      }}
+    >
+      <FText appearance="captionMed12" styleProps={{ color: "textCaption" }}>
+        {children}
+      </FText>
+    </div>
+  );
+}
+
 function LinkAction({
   label,
   onClick,
@@ -345,6 +364,9 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
   const cancelRef = useRef(false);
   const startedRef = useRef(0);
 
+  // The scrolling picker, so a quick-select can return it to the top.
+  const listRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     fn<{ assets: AssetRow[] }>("assets", { pageSize: 200 })
       .then((r) => setAssets(r.assets))
@@ -358,14 +380,26 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
     return () => clearInterval(id);
   }, [running]);
 
-  const filtered = useMemo(() => {
-    if (!assets) return [];
+  // The picker is split into a pinned block of everything currently selected,
+  // then the rest of the matches. Two reasons to pin rather than leave rows in
+  // place: a bulk select scatters 20-odd ticks down a list only six rows tall,
+  // so without this you cannot see what you are about to run; and the 60-row cap
+  // below could otherwise hide a selected asset entirely. `selected` is
+  // insertion-ordered and drives the run queue, so the pinned block is also the
+  // running order. Search still filters both blocks — a selected asset that
+  // does not match the query is hidden like any other.
+  const picker = useMemo(() => {
+    if (!assets) return { top: [] as AssetRow[], rest: [] as AssetRow[] };
     const q = query.trim().toLowerCase();
     const list = q
       ? assets.filter((a) => `${a.name} ${a.category} ${a.manufacturer} ${a.model}`.toLowerCase().includes(q))
       : assets;
-    return list.slice(0, 60);
-  }, [assets, query]);
+    const picked = new Set(selected);
+    const top = selected
+      .map((id) => list.find((a) => a.asset_id === id))
+      .filter(Boolean) as AssetRow[];
+    return { top, rest: list.filter((a) => !picked.has(a.asset_id)).slice(0, 60) };
+  }, [assets, query, selected]);
 
   const chosen = useMemo(
     () => selected.map((id) => assets?.find((a) => a.asset_id === id)).filter(Boolean) as AssetRow[],
@@ -382,17 +416,33 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
     setSelected((prev) => (prev.indexOf(id) >= 0 ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
-  function selectAllFiltered() {
-    setSelected(filtered.map((a) => a.asset_id));
+  // Bulk selects run over every loaded asset, not just the rows the search box
+  // is currently showing, so the number on the Assess button is the number the
+  // quick-select promised.
+  function selectWhere(match: (a: AssetRow) => boolean) {
+    setSelected((assets || []).filter(match).map((a) => a.asset_id));
+    scrollPickerToTop();
   }
 
-  function selectUnassessed() {
-    setSelected((assets || []).filter((a) => !a.assessed).map((a) => a.asset_id));
+  // A quick-select re-pins its picks to the top of the list, but the list keeps
+  // whatever scroll offset it had. Click "Assessed" while scrolled halfway down
+  // and the block you just built sits above the fold, so the click looks like it
+  // did nothing. Send the list home so the result is what you are looking at.
+  //
+  // Deliberately instant, not smooth: the same click re-renders every row into
+  // the two groups, and that reflow lands mid-animation and cancels a smooth
+  // scroll outright — the list just stays where it was.
+  function scrollPickerToTop() {
+    listRef.current?.scrollTo({ top: 0 });
   }
 
-  function selectAssessed() {
-    setSelected((assets || []).filter((a) => a.assessed).map((a) => a.asset_id));
-  }
+  // Drives the disabled state of the quick-selects: no assessed assets yet
+  // means "Assessed" is dead, and a fully assessed list kills "Not assessed".
+  const bulkCounts = useMemo(() => {
+    const all = assets || [];
+    const assessed = all.filter((a) => a.assessed).length;
+    return { all: all.length, assessed, unassessed: all.length - assessed };
+  }, [assets]);
 
   async function start(targets: AssetRow[]) {
     if (targets.length === 0) return;
@@ -458,14 +508,29 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
           icon={{ group: "webtabs", name: "asset" }}
           action={
             <div style={{ display: "flex", gap: "var(--spacing-container-xxlarge)", flexShrink: 0 }}>
-              <LinkAction label="Not assessed" onClick={selectUnassessed} disabled={running} />
-              <LinkAction label="All assessed" onClick={selectAssessed} disabled={running} />
               <LinkAction
-                label={`Select all ${filtered.length}`}
-                onClick={selectAllFiltered}
-                disabled={running || filtered.length === 0}
+                label="All"
+                onClick={() => selectWhere(() => true)}
+                disabled={running || bulkCounts.all === 0}
               />
-              <LinkAction label="Clear" onClick={() => setSelected([])} disabled={running || selected.length === 0} />
+              <LinkAction
+                label="Assessed"
+                onClick={() => selectWhere((a) => a.assessed)}
+                disabled={running || bulkCounts.assessed === 0}
+              />
+              <LinkAction
+                label="Not assessed"
+                onClick={() => selectWhere((a) => !a.assessed)}
+                disabled={running || bulkCounts.unassessed === 0}
+              />
+              <LinkAction
+                label="Clear"
+                onClick={() => {
+                  setSelected([]);
+                  scrollPickerToTop();
+                }}
+                disabled={running || selected.length === 0}
+              />
             </div>
           }
         >
@@ -492,6 +557,7 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
         />
 
         <div
+          ref={listRef}
           style={{
             maxHeight: 320,
             overflowY: "auto",
@@ -500,22 +566,39 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
             backgroundColor: "var(--colors-background-container)",
           }}
         >
-          {filtered.length === 0 ? (
+          {picker.top.length === 0 && picker.rest.length === 0 ? (
             <div style={{ padding: "var(--spacing-container-xxlarge)", textAlign: "center" }}>
               <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
                 No asset matches “{query}”.
               </FText>
             </div>
           ) : (
-            filtered.map((a) => (
-              <AssetOption
-                key={a.asset_id}
-                asset={a}
-                selected={selected.indexOf(a.asset_id) >= 0}
-                disabled={running}
-                onToggle={() => toggle(a.asset_id)}
-              />
-            ))
+            <>
+              {picker.top.length > 0 && (
+                <>
+                  <PickerGroupLabel>Selected · {picker.top.length}</PickerGroupLabel>
+                  {picker.top.map((a) => (
+                    <AssetOption
+                      key={a.asset_id}
+                      asset={a}
+                      selected
+                      disabled={running}
+                      onToggle={() => toggle(a.asset_id)}
+                    />
+                  ))}
+                  {picker.rest.length > 0 && <PickerGroupLabel>Not selected</PickerGroupLabel>}
+                </>
+              )}
+              {picker.rest.map((a) => (
+                <AssetOption
+                  key={a.asset_id}
+                  asset={a}
+                  selected={false}
+                  disabled={running}
+                  onToggle={() => toggle(a.asset_id)}
+                />
+              ))}
+            </>
           )}
         </div>
 
@@ -566,6 +649,14 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
       </Card>
 
       {/* ------------------------------------------------------- 2 · pipeline */}
+      {runs.length === 0 ? (
+        <Card>
+          <CardNote>
+            {initialStages().length}-stage pipeline · runs one asset at a time. The stages appear here
+            as they execute.
+          </CardNote>
+        </Card>
+      ) : (
       <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
         <CardTitle
           icon={{ group: "time-date", name: "date-tick" }}
@@ -632,6 +723,7 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
           </div>
         )}
       </Card>
+      )}
 
       {/* --------------------------------------------------------- 3 · result */}
       {results.length > 0 && <Results runs={runs} results={results} />}
