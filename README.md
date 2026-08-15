@@ -139,11 +139,27 @@ npm run build && facilio vibe deploy
 Tables are created by CSV import because the app database role cannot run DDL:
 
 ```bash
-for t in findings risk_analyses assessments assessment_history cost_config; do
+for t in findings risk_analyses assessments assessment_history baselines wo_meta photo_analysis; do
   facilio vibe db import --file ./seed/$t.csv --table $t
 done
 facilio vibe function run condition-engine cleanup-seed
 ```
+
+**This step is required on every org — it is not sample data.** Each `seed/*.csv` is two lines: a
+header that defines the columns and one sentinel row whose only job is to pin the column types,
+because a CSV import is the only way to bring a table into existence without DDL. `cleanup-seed`
+then deletes those sentinels. Every read query is written `where asset_id <> 0` (and the
+equivalent for `wo_meta` and `baselines`), so a forgotten `cleanup-seed` never surfaces a phantom
+asset — but a skipped import means the queries throw, and the home page shows an error banner
+instead of its "Nothing assessed yet" empty state.
+
+The demo fixtures are the *other* files in that directory — `seed-demo.mjs`, `seed-photos-*.mjs`,
+`make_poor_photos.py` and `photos/`. Those push invented work orders and photographs into Facilio
+CMMS for the hackathon org, and are deliberately absent from this setup block. Never run them
+against a customer org.
+
+`cost_config` is not in the list: `baselines` replaced it, and the table survives only because the
+app DB role cannot drop one.
 
 Each agent is created with its specification as its instructions:
 

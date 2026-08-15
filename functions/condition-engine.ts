@@ -2882,8 +2882,6 @@ server.addHandler({
     out["wo_meta"] = num(wm.rowCount);
     const bl = db.query("delete from baselines where category = '__seed__'");
     out["baselines"] = num(bl.rowCount);
-    const zp = db.query("delete from zz_probe");
-    out["zz_probe"] = num(zp.rowCount);
     return { ok: true, deleted: out };
   },
 });
