@@ -42,26 +42,32 @@ It is enforced three independent ways, so no single failure can break it:
         ───────────────────────────────       ─────────────────────────
         scope filter: corrective only         visual defect analysis
         BEFORE-photo filter                   issue normalization
-        WO-text normalization                 severity judgment
-        inspection answer fetch               recurrence status
-        count(distinct wo_id)                 trend classification
-        occurrence rates                                │
-        component concentration                         │
-        condition · deterioration             condition-core (gpt-5.1)
-        RUL · risk · CAPEX                    ─────────────────────────
-        recommendation                        the explanation
+        inspection answer fetch               severity judgment
+        count(distinct wo_id)                 recurrence status
+        occurrence rates                      trend classification
+        component concentration               asset-level consolidation
+        condition · deterioration                       │
+        RUL · risk · CAPEX                    wo-evidence (gpt-5.1)
+        recommendation                        ─────────────────────────
+                     │                        issue · component from
+                     │                        each WO's own wording
+                     │                        severity · confidence
+                     │                                │
+                     │                        condition-core (gpt-5.1)
+                     │                        ─────────────────────────
+                     │                        the explanation
                      │                        cross-stream judgment
                      │                        inspection normalization
                      │                        class reference constants
                      │                                │
                      └────────────┬───────────────────┘
                                   ▼
-                        save-analysis · save-core
+                   save-wo-evidence · save-analysis · save-core
                         engine numbers overwrite agent numbers;
                         the number lock discards any prose figure
                         absent from the calculated results, and the
-                        quote lock discards any inspection claim not
-                        found verbatim in the inspector's own answer
+                        quote lock discards any claim not found
+                        verbatim in its own source text
                                   ▼
                         CONDITION REGISTER  (app Postgres)
                         findings · risk_analyses · assessments
@@ -74,8 +80,10 @@ Age, cost and criticality are deliberately **excluded** from the visual analysis
 
 ## What is AI and what is not
 
-There are exactly **two** agents. `photo-validation` reads photographs;
-`condition-core` does everything else an LLM does here, in one call per assessment.
+There are exactly **three** agents, one per kind of evidence. `photo-validation` reads
+photographs and consolidates the asset-level analysis; `wo-evidence` reads what was
+written on each corrective work order; `condition-core` does everything else an LLM does
+here, in one call per assessment.
 
 | Done by the agents | Done by deterministic code |
 | --- | --- |
@@ -104,10 +112,12 @@ src/
   pages/Register.tsx     the condition register
   pages/Settings.tsx     cost and lifecycle configuration
 functions/
-  condition-engine.ts    all 23 server handlers
+  condition-engine.ts    all 25 server handlers
 agent-schemas/
   photo-validation-instructions.txt   the photo agent specification
   photo-validation.json               structured-output schema
+  wo-evidence-instructions.txt        the work-order reader specification
+  wo-evidence.json                    structured-output schema
   condition-core-instructions.txt     the core analyst specification
   condition-core.json                 structured-output schema
 seed/
@@ -173,11 +183,14 @@ readable photos. Ungraded findings are now excluded from that stream rather than
 at its midpoint.
 
 `--model-params` is passed to the provider verbatim, so `verbosity` arrives as the Responses API's
-`text.verbosity`. Both agents write prose that a manager reads next to the numbers, and at the
-provider default they write paragraphs where a sentence carries the finding. `reasoning_effort` is
-deliberately left unset: reasoning is what buys the precision the two locks demand, while
-`verbosity` shortens the prose without spending it. Per-field word budgets live in each agent's
-instructions and are repeated on the matching schema leaf so the two cannot drift.
+`text.verbosity`. `photo-validation` and `condition-core` both write prose that a manager reads next
+to the numbers, and at the provider default they write paragraphs where a sentence carries the
+finding. `reasoning_effort` is deliberately left unset: reasoning is what buys the precision the two
+locks demand, while `verbosity` shortens the prose without spending it. Per-field word budgets live
+in each agent's instructions and are repeated on the matching schema leaf so the two cannot drift.
+
+`wo-evidence` is left at the provider default, because it emits no prose to shorten — every field it
+returns is an enum, a number, or a verbatim quote that must not be trimmed.
 
 ## Known platform limitations
 
