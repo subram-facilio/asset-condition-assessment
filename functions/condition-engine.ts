@@ -2874,7 +2874,7 @@ server.addHandler({
   execute: async () => {
     const db = conn();
     const out: Record<string, number> = {};
-    for (const t of ["findings", "risk_analyses", "assessments", "assessment_history", "photo_analysis"]) {
+    for (const t of ["findings", "risk_analyses", "assessments", "assessment_history"]) {
       const r = db.query(`delete from ${t} where asset_id = 0`);
       out[t] = num(r.rowCount);
     }
@@ -2981,7 +2981,7 @@ server.addHandler({
 server.addHandler({
   name: "purge-photo-findings",
   description:
-    "Delete every photo-derived finding and every stored agent photo reply, across all assets. Used when photo evidence must be re-established from live Facilio data only.",
+    "Delete every photo-derived finding across all assets. Used when photo evidence must be re-established from live Facilio data only.",
   parameters: {},
   execute: async () => {
     const db = conn();
@@ -2989,25 +2989,11 @@ server.addHandler({
     // that yielded none. Neither can be reproduced from live data at present, so
     // leaving either behind would show visual evidence the app cannot obtain.
     const findings = db.query("delete from findings where source in ('photo', 'photo_manual', 'photo_unusable')");
-    const analyses = db.query("delete from photo_analysis");
     return {
       ok: true,
       findings_deleted: num(findings.rowCount),
-      photo_analyses_deleted: num(analyses.rowCount),
       note: "Re-run assess for every affected asset: the condition score weighted photo severities, so stored assessments are now stale.",
     };
-  },
-});
-
-server.addHandler({
-  name: "purge-cost-config",
-  description:
-    "Empty the legacy cost_config table. The table itself cannot be dropped — the app DB role has no DDL — so its rows are removed instead.",
-  parameters: {},
-  execute: async () => {
-    const db = conn();
-    const r = db.query("delete from cost_config");
-    return { ok: true, rows_deleted: num(r.rowCount) };
   },
 });
 

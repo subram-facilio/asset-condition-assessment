@@ -71,7 +71,7 @@ It is enforced three independent ways, so no single failure can break it:
                                   ▼
                         CONDITION REGISTER  (app Postgres)
                         findings · risk_analyses · assessments
-                        assessment_history · cost_config
+                        assessment_history · wo_meta · baselines
                                   ▼
                              Dashboard
 ```
@@ -139,7 +139,7 @@ npm run build && facilio vibe deploy
 Tables are created by CSV import because the app database role cannot run DDL:
 
 ```bash
-for t in findings risk_analyses assessments assessment_history baselines wo_meta photo_analysis; do
+for t in findings risk_analyses assessments assessment_history baselines wo_meta; do
   facilio vibe db import --file ./seed/$t.csv --table $t
 done
 facilio vibe function run condition-engine cleanup-seed
@@ -214,7 +214,7 @@ These are real constraints found while building, not design choices. Each is sur
 
 **Facilio photos cannot be read by the browser.** Attachment records carry no URL. `download-work-order-attachment` returns a working pre-signed S3 URL, but that bucket sends no `Access-Control-Allow-Origin`, so a browser `fetch` is blocked and an `<img>`-to-canvas read taints the canvas. The function sandbox is no help either — it decodes bodies as UTF-8, which corrupted a 196,764-byte JPEG into 186,304 characters with 78,878 replacement characters. Since `uploadFile` and `executeAgent` are browser-only, the bytes have nowhere to come from. The app therefore tries the live signed URL first and falls back to a bundled copy of the same file, and it states which source it used. A CORS policy on that bucket is the entire fix.
 
-**No cost or criticality fields exist in this org.** Work orders expose no cost field and assets no criticality field, so both are read from the editable `cost_config` table and every figure is labelled as estimated rather than invented.
+**No cost or criticality fields exist in this org.** Work orders expose no cost field and assets no criticality field. Both now come from the `baselines` table as equipment-*class* reference constants, supplied by `condition-core` and overridable per category in Settings, and every figure derived from them is labelled as estimated rather than invented. The `cost_config` table these used to be read from is retired.
 
 **Inspections are read from the inspector's words, not from a score.** The condition score weights an
 inspection stream at 0.35, resolved in two tiers. Tier 1 is a scored template's `scorePercent` — the
