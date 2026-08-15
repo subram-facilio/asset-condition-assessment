@@ -1,0 +1,86 @@
+{
+  "title": "WorkOrderEvidence",
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "wo_id": {
+            "type": "number",
+            "description": "The work_order_id this finding came from. Must be one of the ids in the input."
+          },
+          "issue_code": {
+            "type": "string",
+            "enum": [
+              "corrosion",
+              "leakage",
+              "oil_leakage",
+              "crack_fracture",
+              "dent_deformation",
+              "broken_component",
+              "missing_component",
+              "insulation_damage",
+              "coating_deterioration",
+              "fouling",
+              "scaling",
+              "thermal_damage",
+              "loose_component",
+              "physical_wear",
+              "surface_deterioration",
+              "other_visible_abnormality"
+            ],
+            "description": "The kind of defect the wording describes."
+          },
+          "component": {
+            "type": "string",
+            "enum": [
+              "compressor",
+              "impeller",
+              "coil",
+              "strainer",
+              "bearing",
+              "seal",
+              "motor",
+              "piping",
+              "electrical_panel",
+              "fan",
+              "pump_body",
+              "valve",
+              "housing",
+              "duct",
+              "belt",
+              "unspecified"
+            ],
+            "description": "The part named in the wording. Use unspecified when no part is named; never guess from the asset type."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical", "not_graded"],
+            "description": "How severe the wording says the defect is. Use not_graded when the wording describes a defect but gives no indication of how bad it is."
+          },
+          "confidence": {
+            "type": "number",
+            "description": "How confident you are in this reading, from 0 to 1. Return -1 when you have no basis for a figure at all — the report will show a dash. Never invent a number and never reuse a habitual one."
+          },
+          "quote": {
+            "type": "string",
+            "description": "A span of at least 12 characters copied EXACTLY from this work order's subject or description. The engine checks it character for character and discards the finding if it is not found."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Exactly one sentence YOU write, interpreting what the wording means for the equipment's condition. Shown to the user verbatim, above the quote. Never copy the subject or description into this field — the quote already carries them."
+            }
+          }
+        },
+        "required": ["wo_id", "issue_code", "component", "severity", "confidence", "quote", "evidence"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["findings"],
+  "additionalProperties": false
+}

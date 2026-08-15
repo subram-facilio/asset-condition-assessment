@@ -66,9 +66,9 @@ const SINGLE_RUN_PHOTO_LIMIT = 6; // above this, batch per work order then conso
 
 export const INITIAL_STAGES: Stage[] = [
   { key: "gather", label: "Fetch corrective history", detail: "Corrective work orders and BEFORE photos from Facilio", state: "pending" },
-  { key: "text", label: "Normalize work-order text", detail: "Derive issue codes from work-order wording", state: "pending" },
+  { key: "text", label: "Read work-order evidence", detail: "wo-evidence agent — issue, component and severity from each work order's wording", state: "pending" },
   { key: "photos", label: "Load photo evidence", detail: "Fetch before-photo bytes for analysis", state: "pending" },
-  { key: "agent", label: "Analyze photos", detail: "photo-validation agent, batched one run per work order", state: "pending" },
+  { key: "agent", label: "Consolidate the analysis", detail: "photo-validation agent — photographs when there are any, the work-order findings when there are not", state: "pending" },
   { key: "findings", label: "Store findings", detail: "Validate and persist, deduped per attachment", state: "pending" },
   { key: "analysis", label: "Count occurrences and consolidate", detail: "Engine recomputes every count; agent keeps judgment", state: "pending" },
   { key: "assess", label: "Run lifecycle engines", detail: "Condition, MTBF, deterioration, RUL, risk, CAPEX, recommendation", state: "pending" },
@@ -85,7 +85,7 @@ export const INITIAL_STAGES: Stage[] = [
 export function initialStages(fresh = true): Stage[] {
   return INITIAL_STAGES.map((s) => {
     if (!fresh) return { ...s };
-    if (s.key === "text") return { ...s, detail: "Re-derive issue codes from the current work-order wording" };
+    if (s.key === "text") return { ...s, detail: "Re-read every work order's current wording" };
     if (s.key === "photos") return { ...s, detail: "Re-read every before photo from Facilio" };
     if (s.key === "findings") return { ...s, detail: "Replace each re-analyzed photo's findings" };
     return { ...s };
@@ -230,13 +230,15 @@ export async function runBatch(
 
 /** Rough wall-clock estimate, from what the pipeline actually took in practice. */
 export function estimateSeconds(photoCounts: number[]): { low: number; high: number } {
-  // ~10s for a text-only asset; photo analysis adds roughly 6-12s per work order
-  // with photos, since each is its own agent run.
+  // The base is no longer a cheap regex pass: every asset now makes at least one
+  // wo-evidence call before any photo work, so a photo-less asset costs an agent run
+  // rather than a database write. Photo analysis still adds 6-12s per work order with
+  // photos, since each is its own run.
   let low = 0;
   let high = 0;
   for (const photos of photoCounts) {
-    low += 8 + photos * 4;
-    high += 14 + photos * 10;
+    low += 16 + photos * 4;
+    high += 30 + photos * 10;
   }
   return { low: Math.round(low), high: Math.round(high) };
 }
@@ -262,33 +264,58 @@ export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions 
     `${bundle.total_corrective_work_orders} corrective work orders, ${bundle.photos_available} BEFORE photos`
   );
 
-  /* -------- 2. Work-order text stream -------- */
+  /* -------- 2. Work-order evidence stream -------- *
+   * The wo-evidence agent reads each work order's own wording and reports the issue,
+   * component, severity and confidence. It replaced a keyword table that wrote severity
+   * "unknown" and confidence 0.55 into every row it produced, which made 45% of the
+   * condition score a constant for any asset without readable photos.
+   *
+   * No try/catch, on purpose. A failed agent must fail the asset — `runBatch` retries
+   * once and then flags it — because storing nothing quietly would leave `assess` to
+   * compute a perfectly plausible score with no severity evidence behind it. The delete
+   * is folded into `save-wo-evidence`, so a failure here leaves the previous stream
+   * standing instead of emptying the asset.                                           */
   set("text", "running");
-  let textReplaced = 0;
-  if (fresh) {
-    // Only once `gather` has proved the CMMS is answering — it is the biggest fan-out
-    // and where a bad connection announces itself — and only immediately before the
-    // handler that rebuilds these rows. Nothing else refills them.
-    //
-    // `normalize-wo-text` alone can never drop a finding: it inserts what is missing
-    // and leaves everything else. So a work order that was reworded, retyped to
-    // Preventive, or deleted in Facilio keeps its original issue code forever unless
-    // the stream is cleared and rebuilt from what Facilio says now.
-    const cleared = await fn<{ deleted: number }>("clear-wo-text-findings", { assetId });
-    textReplaced = cleared.deleted;
+  const prep = await fn<{ work_orders: number; wos_json: string; chunks: Array<{ input: string }> }>(
+    "wo-evidence-input",
+    { assetId }
+  );
+
+  const woFindings: unknown[] = [];
+  for (let i = 0; i < prep.chunks.length; i++) {
+    if (prep.chunks.length > 1) {
+      set("text", "running", `Reading work orders — batch ${i + 1} of ${prep.chunks.length}`);
+    }
+    const reply = await runAgent<{ findings?: unknown[] }>(prep.chunks[i].input, undefined, "wo-evidence");
+    woFindings.push(...(reply?.findings || []));
   }
-  const text = await fn<{ inserted: number; work_orders_scanned: number; unmatched: number }>("normalize-wo-text", {
+
+  const text = await fn<{
+    inserted: number;
+    replaced: number;
+    duplicates: number;
+    rejected: string[];
+    unquoted: string[];
+  }>("save-wo-evidence", {
     assetId,
+    payload: JSON.stringify({ findings: woFindings }),
+    wos: prep.wos_json,
+    // Stringified: handler parameters accept only numbers and strings.
+    replace: fresh ? "true" : "false",
   });
+
+  // Discarded claims are named, not swallowed. A quote the engine could not find in the
+  // work order is the lock doing its job, and someone comparing finding counts between
+  // two runs needs to see that rather than wonder where the rows went.
+  const discarded = (text.unquoted?.length || 0) + (text.rejected?.length || 0);
   set(
     "text",
     "done",
-    // Reusing, `inserted` counts what is NEW and reads 0 on a repeat run. Fresh, it is
-    // the whole rebuilt stream — left worded as "N issues" a reader takes that jump
-    // from 0 to 14 as fourteen newly discovered problems.
-    fresh
-      ? `${text.inserted} issue${text.inserted === 1 ? "" : "s"} re-derived from ${text.work_orders_scanned} work orders (${text.unmatched} no match, ${textReplaced} replaced)`
-      : `${text.inserted} issues from ${text.work_orders_scanned} work orders (${text.unmatched} no match)`
+    `${text.inserted} issue${text.inserted === 1 ? "" : "s"} read from ${prep.work_orders} work order${
+      prep.work_orders === 1 ? "" : "s"
+    }` +
+      (fresh && text.replaced ? `, ${text.replaced} replaced` : "") +
+      (discarded ? `, ${discarded} unverifiable claim${discarded === 1 ? "" : "s"} discarded` : "")
   );
 
   /* -------- 3. Photo bytes -------- */
@@ -315,7 +342,7 @@ export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions 
 
   if (wosWithPhotos.length === 0) {
     set("photos", "skipped", "No BEFORE photos on this asset's corrective work orders");
-    set("agent", "skipped", "Nothing to analyze visually — work-order text stream only");
+    set("agent", "skipped", "Nothing to analyze visually — work-order evidence only");
   } else if (pending.length === 0) {
     set("photos", "skipped", `All ${cachedCount} photos already analyzed (cached)`);
     set("agent", "skipped", "Reusing cached photo findings");
@@ -467,6 +494,29 @@ export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions 
     );
   } else {
     set("findings", "skipped", "No photo findings to store");
+
+    /* -------- 4b. The same agent, over work-order evidence -------- *
+     * Without this the asset-level analysis simply does not happen on a photo-less asset:
+     * `analysis` stays null, `save-analysis` receives "{}", and every card falls back to
+     * engine defaults — even though `wo-evidence` has already graded each finding under
+     * them. The agent is given those stored findings rather than the work-order text so
+     * that only one agent ever reads the wording; see `consolidation-input`.           */
+    const prep = await fn<{ work_orders: number; findings: number; input: string }>("consolidation-input", {
+      assetId,
+      totalCorrective: bundle.total_corrective_work_orders,
+    });
+
+    if (prep.findings > 0) {
+      set("agent", "running", `Consolidating work-order evidence from ${prep.work_orders} work orders`);
+      analysis = await runAgent<Analysis>(prep.input, undefined, "photo-validation");
+      set(
+        "agent",
+        "done",
+        `1 consolidation run over ${prep.findings} work-order finding${prep.findings === 1 ? "" : "s"} — no photographs`
+      );
+    } else {
+      set("agent", "skipped", "No corrective findings to consolidate");
+    }
   }
 
   /* -------- 6. Consolidate with engine-owned arithmetic -------- */

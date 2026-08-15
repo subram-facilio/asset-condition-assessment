@@ -8,7 +8,6 @@ import { DetailShell, RailFact, type DetailTab } from "../components/DetailShell
 import { Card, CardTitle, CardNote } from "../components/Card";
 import { Disclosure } from "../components/Disclosure";
 import { EmptyState } from "../components/EmptyState";
-import { PhotoEvidence } from "../components/PhotoEvidence";
 import {
   StatusTag,
   gradeTone,
@@ -153,9 +152,50 @@ const SOURCE_LABEL: Record<string, string> = {
   photo: "photo",
   photo_manual: "photo (supplied)",
   photo_unusable: "photo (unusable)",
-  wo_text: "WO text",
+  wo_text: "Work order",
   inspection: "inspection",
 };
+
+/**
+ * `unknown` reads as a fault. It is not one — it means the agent read the wording and
+ * found no severity stated in it, which is a judgment worth showing. The stored token
+ * stays `unknown` because SEV_ORDER, SEV_VALUE and every row written before the agent
+ * existed use it; only the word shown here changes.
+ */
+const SEVERITY_LABEL: Record<string, string> = {
+  unknown: "not graded",
+};
+
+const severityText = (s: string) => SEVERITY_LABEL[s] || s;
+
+/**
+ * `unspecified` is the same kind of value one field over. The wo-evidence enum carries it
+ * so the agent can report that the wording names no part — its instruction is "never guess
+ * from the asset type" — rather than pick one to fill the field. Printed raw it reads as a
+ * gap in the data instead of the reading it is.
+ */
+const COMPONENT_LABEL: Record<string, string> = {
+  unspecified: "part not named",
+};
+
+const componentText = (c: string) => COMPONENT_LABEL[c] || pretty(c);
+
+/**
+ * Evidence streams are stored under engine-internal names. `pretty()` alone turns
+ * `wo_text_severity` into "Wo text severity", which is neither the vocabulary the rest
+ * of the page uses nor readable.
+ */
+const STREAM_LABEL: Record<string, string> = {
+  wo_text_severity: "Work-order severity",
+  photo_severity: "Photo severity",
+  mixed_severity: "Mixed severity",
+  inspection_grade: "Inspection grade",
+  inspection_condition: "Inspection condition",
+  corrective_pressure: "Corrective pressure",
+};
+
+/** Confidence is the agent's or absent — an absent one is a dash, never 0.00. */
+const confidenceText = (c: number) => (c > 0 ? c.toFixed(2) : "—");
 
 const SOURCE_TONE: Record<string, "info" | "mute" | "warn"> = {
   photo: "info",
@@ -644,7 +684,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                   are not zero-filled, their weight is redistributed across the rest.
                 </CardNote>
                 {(inputs.streams_used as Array<{ name: string; weight: number; value: number }>).map((st) => (
-                  <Row key={st.name} label={pretty(st.name)}>
+                  <Row key={st.name} label={STREAM_LABEL[st.name] || pretty(st.name)}>
                     {st.value} of 5 · weight {st.weight}
                   </Row>
                 ))}
@@ -780,11 +820,21 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                       {i.display_name}
                     </FText>
                     <StatusTag tone={statusTone(i.status)}>{pretty(i.status)}</StatusTag>
-                    <StatusTag tone={severityTone(i.severity.overall)}>{i.severity.overall} severity</StatusTag>
-                    <StatusTag tone={trendTone(i.trend)}>{pretty(i.trend)}</StatusTag>
+                    {/* A severity nobody graded and a trend nobody could establish describe the
+                        evidence, not the issue. Printed on every card they crowded out the two
+                        chips that do describe it — recurrence status and occurrence count. */}
+                    {/* Shown even when ungraded. "not graded" is now a stated reading of
+                        the evidence rather than a missing value, so hiding the chip would
+                        drop information the reader needs to weigh the card. */}
+                    <StatusTag tone={severityTone(i.severity.overall)}>
+                      {i.severity.overall === "unknown" ? "not graded" : `${i.severity.overall} severity`}
+                    </StatusTag>
+                    {i.trend !== "insufficient_evidence" && (
+                      <StatusTag tone={trendTone(i.trend)}>{pretty(i.trend)}</StatusTag>
+                    )}
                     <span style={{ marginLeft: "auto" }}>
                       <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                        confidence {i.confidence.toFixed(2)}
+                        confidence {i.confidence === null ? "—" : i.confidence.toFixed(2)}
                       </FText>
                     </span>
                   </div>
@@ -833,13 +883,17 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                     />
                   </span>
 
+                  {/* The names are the wo-evidence agent's reading of each work order's
+                      wording, constrained to an enum; the counts are the engine's, grouped
+                      over distinct work orders. Chips can sum to more than the occurrence
+                      count above — that row counts work orders, these count parts. */}
                   <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-medium)", flexWrap: "wrap" }}>
                     <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
                       Components:
                     </FText>
                     {i.affected_components.map((c) => (
                       <StatusTag tone="mute" key={c.component}>
-                        {pretty(c.component)} ×{c.occurrence_count}
+                        {componentText(c.component)} ×{c.occurrence_count}
                       </StatusTag>
                     ))}
                   </div>
@@ -917,7 +971,9 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                             not graded
                           </FText>
                         ) : (
-                          <StatusTag tone={severityTone(c.highest_severity)}>{c.highest_severity}</StatusTag>
+                          <StatusTag tone={severityTone(c.highest_severity)}>
+                            {severityText(c.highest_severity)}
+                          </StatusTag>
                         )}
                       </td>
                     </tr>
@@ -984,8 +1040,6 @@ export function AssetDetail({ assetId }: { assetId: number }) {
       {/* ══════════════════════════════════════════════════════════ evidence */}
       {tab === "evidence" && (
         <>
-          <PhotoEvidence assetId={assetId} onDone={load} />
-
           {inspectionEvidence && inspectionEvidence.observations?.length > 0 && (
             <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
               <CardTitle
@@ -1003,7 +1057,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 {inspectionEvidence.observations.slice(0, showAllObs ? inspectionEvidence.observations.length : 3).map((o, i) => (
                   <div key={`${o.answer_id}-${o.type}-${i}`} style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-small)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
-                      <StatusTag tone={severityTone(o.severity)}>{o.severity}</StatusTag>
+                      <StatusTag tone={severityTone(o.severity)}>{severityText(o.severity)}</StatusTag>
                       <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
                         {o.type.replace(/_/g, " ")}
                       </FText>
@@ -1043,7 +1097,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
           <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
             {findings.length} finding{findings.length === 1 ? "" : "s"} from{" "}
             {scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0} corrective work orders ·{" "}
-            {photoFindings.length} photo-backed · {textFindings.length} text-derived
+            {photoFindings.length} photo-backed · {textFindings.length} from work-order wording
             {inspectionEvidence?.kept ? ` · ${inspectionEvidence.kept} inspector-observed` : ""}
           </FText>
 
@@ -1064,7 +1118,6 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                   <>
                     <th style={TABLE_HEAD}>Work order</th>
                     <th style={TABLE_HEAD}>Issue</th>
-                    <th style={TABLE_HEAD}>Component</th>
                     <th style={TABLE_HEAD}>Severity</th>
                     <th style={TABLE_HEAD}>Conf.</th>
                     <th style={TABLE_HEAD}>Source</th>
@@ -1076,17 +1129,34 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                   <tr key={i}>
                     <td style={{ ...TABLE_CELL, fontFamily: "var(--mono)", fontSize: 12 }}>#{f.wo_id}</td>
                     <td style={{ ...TABLE_CELL, color: "var(--colors-text-main)" }}>{f.issue_label}</td>
-                    <td style={TABLE_CELL}>{pretty(f.component)}</td>
                     <td style={TABLE_CELL}>
-                      <StatusTag tone={severityTone(f.severity)}>{f.severity}</StatusTag>
+                      <StatusTag tone={severityTone(f.severity)}>{severityText(f.severity)}</StatusTag>
                     </td>
-                    <td style={TABLE_CELL}>{f.confidence.toFixed(2)}</td>
+                    <td style={TABLE_CELL}>{confidenceText(f.confidence)}</td>
                     <td style={TABLE_CELL}>
                       <StatusTag tone={SOURCE_TONE[f.source] || "mute"}>
                         {SOURCE_LABEL[f.source] || f.source}
                       </StatusTag>
                     </td>
-                    <td style={{ ...TABLE_CELL, font: "var(--text-caption-reg-12)" }}>{f.evidence[0] || "—"}</td>
+                    {/* The agent's own sentence, then the span it quoted to earn the row.
+                        Both come from the model; the quote marks and rule are applied here
+                        rather than baked into the stored string, which is how the previous
+                        implementation ended up with a template in the evidence column. */}
+                    <td style={{ ...TABLE_CELL, font: "var(--text-caption-reg-12)" }}>
+                      <div>{f.evidence[0] || "—"}</div>
+                      {f.evidence.length > 1 && (
+                        <div
+                          style={{
+                            marginTop: "var(--spacing-container-small)",
+                            paddingLeft: "var(--spacing-container-large)",
+                            borderLeft: "2px solid var(--colors-border-neutral-base-subtler)",
+                            color: "var(--colors-text-caption)",
+                          }}
+                        >
+                          “{f.evidence[f.evidence.length - 1]}”
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </DataGrid>

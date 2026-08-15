@@ -2,8 +2,8 @@
  * condition-engine — server-side brain of the Condition Assessment Agent.
  *
  * Owns everything deterministic: fetching corrective work orders and their
- * BEFORE photos from Facilio CMMS, normalizing work-order text into issue
- * codes, counting occurrences (STEP 5/6/8 of the agent spec), and the
+ * BEFORE photos from Facilio CMMS, verifying what the agents report about them,
+ * counting occurrences (STEP 5/6/8 of the agent spec), and the
  * downstream lifecycle engines (condition, deterioration, RUL, risk, CAPEX,
  * recommendation).
  *
@@ -114,64 +114,31 @@ const ISSUE_LABELS: Record<string, string> = {
 };
 
 /**
- * Work-order TEXT normalizer. The agent spec (rule 5) accepts "explicitly
- * stated work-order information" as evidence, which keeps recurrence analysis
- * working for assets that have no before photos at all.
- * Order matters: oil_leakage must be tested before the generic leakage.
+ * Component vocabulary for work-order findings.
+ *
+ * The wo-evidence agent picks from this list and `save-wo-evidence` rejects anything
+ * outside it. It is the same set the regex table that preceded the agent produced, kept
+ * deliberately: components are grouped and counted across findings, so rows written
+ * before and after the agent took the job over have to speak the same words.
  */
-const WO_TEXT_RULES: Array<{ re: RegExp; issue: string; component?: string }> = [
-  { re: /oil\s*(leak|seep|stain)|lubricant\s*leak/i, issue: "oil_leakage" },
-  { re: /corro|rust|oxidi[sz]/i, issue: "corrosion" },
-  { re: /insulat|lagging/i, issue: "insulation_damage" },
-  { re: /crack|fractur|split/i, issue: "crack_fracture" },
-  { re: /dent|deform|bent|buckl/i, issue: "dent_deformation" },
-  { re: /broken|snapped|shatter/i, issue: "broken_component" },
-  { re: /missing|absent/i, issue: "missing_component" },
-  { re: /paint|coating|peel/i, issue: "coating_deterioration" },
-  { re: /foul|clog|block|choke|dirt|strainer|coil clean|filter/i, issue: "fouling" },
-  { re: /scal(e|ing)|deposit|limescale/i, issue: "scaling" },
-  { re: /overheat|burn|scorch|thermal|short circuit|electrical|wiring|terminal/i, issue: "thermal_damage" },
-  { re: /vibrat|align|loose|slack|belt tension/i, issue: "loose_component" },
-  { re: /wear|erod|erosion|abrasion|worn/i, issue: "physical_wear" },
-  { re: /leak|drip|seep|weep/i, issue: "leakage" },
-  { re: /pitting|surface deterior|degrad/i, issue: "surface_deterioration" },
+const COMPONENT_CODES = [
+  "compressor",
+  "impeller",
+  "coil",
+  "strainer",
+  "bearing",
+  "seal",
+  "motor",
+  "piping",
+  "electrical_panel",
+  "fan",
+  "pump_body",
+  "valve",
+  "housing",
+  "duct",
+  "belt",
+  "unspecified",
 ];
-
-/** Component guess from work-order text — used only for wo_text findings. */
-const COMPONENT_RULES: Array<{ re: RegExp; component: string }> = [
-  { re: /compressor/i, component: "compressor" },
-  { re: /impeller/i, component: "impeller" },
-  { re: /coil|condenser coil|evaporator/i, component: "coil" },
-  { re: /strainer|filter/i, component: "strainer" },
-  { re: /bearing/i, component: "bearing" },
-  { re: /seal|gasket/i, component: "seal" },
-  { re: /motor/i, component: "motor" },
-  { re: /pipe|piping|pipework|joint|flange/i, component: "piping" },
-  { re: /panel|switchgear|breaker|mcc/i, component: "electrical_panel" },
-  { re: /fan|blower/i, component: "fan" },
-  { re: /pump\b/i, component: "pump_body" },
-  { re: /valve/i, component: "valve" },
-  { re: /housing|casing|body|shell/i, component: "housing" },
-  { re: /duct/i, component: "duct" },
-  { re: /belt/i, component: "belt" },
-];
-
-function normalizeWoText(text: string): { issue: string; component: string } | null {
-  if (!text) return null;
-  for (const rule of WO_TEXT_RULES) {
-    if (rule.re.test(text)) {
-      let component = "unspecified";
-      for (const c of COMPONENT_RULES) {
-        if (c.re.test(text)) {
-          component = c.component;
-          break;
-        }
-      }
-      return { issue: rule.issue, component };
-    }
-  }
-  return null;
-}
 
 /* ------------------------------------------------------------------ *
  * Severity handling — spec STEP 9 keeps severity independent of frequency.
@@ -185,6 +152,69 @@ const SEV_VALUE: Record<string, number> = {
   high: 4,
   critical: 5,
 };
+
+/**
+ * What the wo-evidence agent may answer, mapped to what the table stores.
+ *
+ * The agent says `not_graded` because that is what it means — it read the wording and
+ * found no severity in it. The table stores `unknown`, which is the token SEV_ORDER,
+ * SEV_VALUE and worstSeverity() already speak and which rows written before this agent
+ * existed already carry. Renaming the stored token would mean migrating those rows and
+ * touching three helpers to gain nothing: the word a reader sees is set by the UI label.
+ *
+ * `unknown` is NOT scored at SEV_VALUE's 2.5 midpoint any more — the severity stream
+ * filters these rows out entirely. See the query in `assess`.
+ */
+const AGENT_SEVERITY: Record<string, string> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  critical: "critical",
+  not_graded: "unknown",
+};
+
+/* ------------------------------------------------------------------ *
+ * The quote lock.
+ *
+ * An LLM judging a photograph cannot be checked — the engine never sees the image. An
+ * LLM judging TEXT can be: the engine holds the same sentence the model read, so every
+ * claim must cite a span that is genuinely in it. A claim whose quote is absent is
+ * discarded rather than stored as something the source said.
+ *
+ * Whitespace is collapsed and case ignored because models re-wrap and re-case what they
+ * copy. The 12-character floor is what stops the check from being decorative: a quote of
+ * "rust" would match half the corpus and certify a fabricated finding.
+ * ------------------------------------------------------------------ */
+
+const MIN_QUOTE_CHARS = 12;
+
+const flattenForQuote = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+
+function quoteFoundIn(sourceText: string, quote: string): boolean {
+  const q = flattenForQuote(String(quote || ""));
+  if (q.length < MIN_QUOTE_CHARS) return false;
+  const src = flattenForQuote(String(sourceText || ""));
+  return src.length > 0 && src.indexOf(q) >= 0;
+}
+
+/**
+ * One spelling per component.
+ *
+ * The two agents write this field under different conventions. `wo-evidence` is held to
+ * COMPONENT_CODES and writes `compressor_housing`; `photo-validation` has no enum on its
+ * `component` and writes what it reads, including `compressor housing`. Everything
+ * downstream groups on the exact string, so those became two rows that `pretty()` then
+ * rendered as the same chip twice — "Compressor Housing ×2" beside "Compressor Housing ×1".
+ *
+ * Underscore is the joiner, not space: COMPONENT_CODES itself holds `electrical_panel` and
+ * `pump_body`, so canonicalising toward spaces would push those out of their own enum.
+ */
+const canonicalComponent = (s: string) =>
+  String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "unspecified";
 
 /* ------------------------------------------------------------------ *
  * Findings provenance.
@@ -723,7 +753,9 @@ server.addHandler({
           woId,
           attachmentId,
           issue,
-          String(f.component || "unspecified"),
+          // photo-validation's `component` is free text — no enum on that field — so it is
+          // canonicalised here rather than stored in whatever casing the model chose.
+          canonicalComponent(String(f.component || "unspecified")),
           String(f.location || ""),
           severity,
           confidence,
@@ -747,13 +779,33 @@ server.addHandler({
 });
 
 /* ------------------------------------------------------------------ *
- * normalize-wo-text — deterministic evidence stream from work-order text.
+ * The work-order evidence stream.
+ *
+ * This replaced a regex table that matched keywords in the work-order subject and then
+ * wrote severity "unknown" and confidence 0.55 into every row it produced. Those two
+ * literals were never judgments — the regex was only ever asked for an issue code and a
+ * work order id, which is all recurrence counting needs — but the findings table is
+ * shared with the photo path, where severity and confidence are real, so the text path
+ * had to fill columns it had no answer for. The placeholders then reached the condition
+ * score through the 0.45 severity stream, where identical values on every row made
+ * sevIndex collapse to a constant 2.5 for any asset without readable photos.
+ *
+ * Now an agent reads the same wording and answers properly, and `save-wo-evidence`
+ * refuses anything it cannot verify against the source text.
+ *
+ * Two handlers, not one, because the function sandbox has AGENTS_TOKEN but no
+ * AGENTS_URL: server code cannot call an agent, so the browser sits in the middle.
+ * `wo-evidence-input` prepares, the browser runs the agent, `save-wo-evidence` verifies
+ * and persists — the same split `core-input`/`save-core` already use.
  * ------------------------------------------------------------------ */
 
+/** Work orders per agent call. Keeps one asset's history inside a comfortable context. */
+const WO_EVIDENCE_CHUNK = 25;
+
 server.addHandler({
-  name: "normalize-wo-text",
+  name: "wo-evidence-input",
   description:
-    "Derive issue findings from corrective work-order subject/description text for one asset. Runs without photos and is deduped per (wo_id, issue).",
+    "Build the wo-evidence agent's input for one asset: its corrective work orders chunked into agent-sized batches, plus the exact source text save-wo-evidence must verify quotes against.",
   parameters: {
     assetId: { description: "Facilio asset id", type: "number" },
   },
@@ -761,32 +813,347 @@ server.addHandler({
     const assetId = num(args.assetId);
     if (!assetId) throw new Error("assetId is required");
 
+    const assetRes = await cmms("get-asset", { id: assetId });
+    const asset = assetRes.data || assetRes.asset || assetRes;
+
+    // Same query the regex handler used, page size included: the photo path caps at 40
+    // work orders because each one costs an attachment call, but text is cheap and
+    // recurrence gets better the further back it can see.
     const woRes = await cmms("list-work-orders", {
       filters: `resource=${assetId}&type=Corrective,Breakdown`,
-      select: "id,subject,description,type,createdTime,scheduledStart",
+      select: "id,subject,description,type,priority,createdTime,scheduledStart",
       page_size: 200,
     });
-    const wos: any[] = woRes.data || [];
+    const rawWos: any[] = woRes.data || [];
+
+    const wos = rawWos.map((wo) => ({
+      wo_id: num(wo.id),
+      subject: String(wo.subject || ""),
+      description: String(wo.description || ""),
+      event_date: String(wo.scheduledStart || wo.createdTime || ""),
+    }));
+
+    // `assetFacts` is the one place that knows which of this org's asset fields are
+    // actually populated — category standing in for type, and so on. Reading the raw
+    // fields here instead gave the agent "asset_type: unknown" on an asset that has one.
+    const facts = assetFacts(assetId, asset);
+    const assetHeader = [
+      "Asset information:",
+      `asset_id: ${facts.asset_id}`,
+      `asset_name: ${facts.asset_name}`,
+      `asset_type: ${facts.asset_type || "unknown"}`,
+      `manufacturer: ${facts.manufacturer || "unknown"}`,
+      `model: ${facts.model || "unknown"}`,
+    ].join("\n");
+
+    const chunks: Array<{ input: string; work_orders: number }> = [];
+    for (let i = 0; i < wos.length; i += WO_EVIDENCE_CHUNK) {
+      const batch = wos.slice(i, i + WO_EVIDENCE_CHUNK);
+      chunks.push({
+        work_orders: batch.length,
+        input: [
+          assetHeader,
+          "",
+          "Corrective work orders. Read each one's wording and report only what it states.",
+          ...batch.map((w) =>
+            [
+              "",
+              `work_order_id: ${w.wo_id}`,
+              `date: ${w.event_date.slice(0, 10)}`,
+              `subject: ${w.subject}`,
+              `description: ${w.description}`,
+            ].join("\n")
+          ),
+        ].join("\n"),
+      });
+    }
+
+    return {
+      ok: true,
+      asset_id: assetId,
+      work_orders: wos.length,
+      chunks,
+      // Returned so the browser can hand it straight back: the quote lock has to check
+      // against the text the agent actually saw, not a re-fetch that may have changed.
+      wos_json: JSON.stringify(wos),
+    };
+  },
+});
+
+/* ------------------------------------------------------------------ *
+ * consolidation-input — the photo-less half of the asset-level analysis.
+ *
+ * `photo-validation` consolidates many corrective events into one asset-level reading.
+ * On an asset with photos it consolidates its own per-work-order photo analyses. On an
+ * asset without, there is nothing to consolidate unless someone hands it the findings
+ * `wo-evidence` already read out of the wording — which is what this builds.
+ *
+ * It deliberately ships the STORED findings rather than the raw work-order text. Two
+ * agents reading the same sentence can grade it differently, and the card would then be
+ * free to print "high" over a findings row that says "medium" with no way to tell which
+ * is right. One agent reads the wording; this one only merges what survived the quote
+ * lock.
+ * ------------------------------------------------------------------ */
+
+server.addHandler({
+  name: "consolidation-input",
+  description:
+    "Build photo-validation's MODE: CONSOLIDATION input for an asset with no usable before photos, from the corrective findings already stored for it.",
+  parameters: {
+    assetId: { description: "Facilio asset id", type: "number" },
+    totalCorrective: {
+      description: "Total corrective work orders for the asset; 0 to derive from the findings themselves",
+      type: "number",
+    },
+  },
+  execute: async (args) => {
+    const assetId = num(args.assetId);
+    if (!assetId) throw new Error("assetId is required");
+
+    const assetRes = await cmms("get-asset", { id: assetId });
+    const facts = assetFacts(assetId, assetRes.data || assetRes.asset || assetRes);
+
+    const db = conn();
+    const { rows } = db.query(
+      `select wo_id, issue_code, component, location, severity, confidence, evidence, event_date, source
+         from findings
+        where asset_id = $1 and asset_id <> 0`,
+      [assetId]
+    );
+
+    // Same scoping rule as computeStats: an inspection row's wo_id is an inspection id,
+    // so letting one through here would present a work order that never existed.
+    const findings = rows
+      .map((r: any) => {
+        // `evidence` is a JSON array in a text column; same read as asset-detail does.
+        let ev: string[] = [];
+        try {
+          const parsed = JSON.parse(String(r.evidence || "[]"));
+          if (Array.isArray(parsed)) ev = parsed.filter((x: unknown) => typeof x === "string");
+        } catch (e) {
+          ev = [];
+        }
+        return {
+          wo_id: num(r.wo_id),
+          issue_code: String(r.issue_code),
+          component: canonicalComponent(String(r.component || "unspecified")),
+          location: String(r.location || ""),
+          severity: String(r.severity || "unknown"),
+          confidence: num(r.confidence),
+          evidence: ev,
+          event_date: String(r.event_date || "").slice(0, 10),
+          source: String(r.source),
+        };
+      })
+      .filter((f) => isCorrectiveEvidence(f.source));
+
+    const byWo: Record<string, any[]> = {};
+    const woIds: number[] = [];
+    for (const f of findings) {
+      const k = String(f.wo_id);
+      if (!byWo[k]) {
+        byWo[k] = [];
+        woIds.push(f.wo_id);
+      }
+      byWo[k].push(f);
+    }
+
+    // Nothing to merge. Returned rather than thrown so the caller can skip the stage
+    // honestly instead of asking the agent to consolidate an empty list.
+    if (woIds.length === 0) {
+      return { ok: true, asset_id: assetId, work_orders: 0, findings: 0, input: "" };
+    }
+
+    const total = num(args.totalCorrective) > 0 ? num(args.totalCorrective) : woIds.length;
+    const perWo = woIds.map((id) => ({
+      work_order_id: String(id),
+      event_date: byWo[String(id)][0].event_date,
+      findings: byWo[String(id)].map((f) => ({
+        issue: f.issue_code,
+        component: f.component,
+        location: f.location,
+        severity: f.severity,
+        confidence: f.confidence,
+        // Named per finding rather than declared once for the asset. This handler also
+        // runs when every photo was already analysed on an earlier pass and so nothing
+        // was re-read this time — the rows are there, the images are not. Announcing
+        // "no photographs" over a set that contains photo readings would be a lie the
+        // agent then repeats in its evidence.
+        read_from: f.source === "wo_text" ? "work_order_text" : "photograph",
+        evidence: f.evidence,
+      })),
+    }));
+
+    const photoBacked = findings.filter((f) => f.source !== "wo_text").length;
+    const woPhotoIds: number[] = [];
+    for (const f of findings) {
+      if (f.source !== "wo_text" && woPhotoIds.indexOf(f.wo_id) === -1) woPhotoIds.push(f.wo_id);
+    }
+
+    const input = [
+      "MODE: CONSOLIDATION",
+      "Asset information:",
+      `asset_id: ${facts.asset_id}`,
+      `asset_name: ${facts.asset_name}`,
+      `asset_type: ${facts.asset_type || "unknown"}`,
+      `manufacturer: ${facts.manufacturer || "unknown"}`,
+      `model: ${facts.model || "unknown"}`,
+      "",
+      `Total corrective work orders for this asset: ${total}`,
+      "",
+      photoBacked > 0
+        ? `The findings below are this asset's stored evidence: ${findings.length - photoBacked} read from corrective work-order wording and ${photoBacked} from before-maintenance photographs. Each carries read_from saying which.`
+        : "No photographs were available for this asset. Every finding below was read from a corrective work order's own wording.",
+      "Each one is already verified against its source. Merge them into one consolidated",
+      "asset-level analysis. Count each work order once per issue. Do not invent a defect,",
+      "a component or a severity that is not below.",
+      `Return photo_analysis as an empty array; report photos_analyzed 0 and work_orders_with_usable_photos ${woPhotoIds.length}.`,
+      "",
+      JSON.stringify(perWo),
+    ].join("\n");
+
+    return { ok: true, asset_id: assetId, work_orders: woIds.length, findings: findings.length, input };
+  },
+});
+
+server.addHandler({
+  name: "save-wo-evidence",
+  description:
+    "Verify and store the wo-evidence agent's findings for one asset. Every finding must quote its work order verbatim or it is discarded. With replace=true the delete and the insert happen here together, so a failed agent leaves the previous stream intact.",
+  parameters: {
+    assetId: { description: "Facilio asset id", type: "number" },
+    payload: {
+      description: 'JSON string: {"findings":[{wo_id,issue_code,component,severity,confidence,quote,evidence:[]}]}',
+      type: "string",
+    },
+    wos: {
+      description: "The work orders wo-evidence-input returned, stringified — the text quotes are checked against",
+      type: "string",
+    },
+    replace: {
+      // Declared as a string because the handler runtime accepts only "number" and
+      // "string" parameter types — a boolean here fails the build outright.
+      description: '"true" to rebuild the stream from scratch: deletes this asset\'s existing wo_text rows first',
+      type: "string",
+    },
+  },
+  execute: async (args) => {
+    const assetId = num(args.assetId);
+    if (!assetId) throw new Error("assetId is required");
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(String(args.payload || "{}"));
+    } catch (e) {
+      throw new Error("payload must be valid JSON");
+    }
+    const incoming: any[] = parsed.findings || [];
+
+    // The source text, keyed by work order. A finding naming a work order that was not
+    // in the input is rejected outright — the agent has no other way to know of it, so
+    // an unrecognised id means the reply drifted from the question.
+    const sourceByWo: Record<string, string> = {};
+    const dateByWo: Record<string, string> = {};
+    try {
+      for (const w of JSON.parse(String(args.wos || "[]"))) {
+        sourceByWo[String(w.wo_id)] = `${w.subject || ""} ${w.description || ""}`;
+        dateByWo[String(w.wo_id)] = String(w.event_date || "");
+      }
+    } catch (e) {
+      throw new Error("wos must be valid JSON");
+    }
 
     const db = conn();
     const now = nowIso();
+
+    // Delete and insert in one handler call. The previous design cleared the stream from
+    // the browser before the work that refills it, so anything failing in between left
+    // the asset holding fewer findings than it started with and nothing to restore them.
+    let replaced = 0;
+    if (String(args.replace) === "true") {
+      const cleared = db.query("delete from findings where asset_id = $1 and asset_id <> 0 and source = 'wo_text'", [
+        assetId,
+      ]);
+      replaced = num(cleared.rowCount);
+    }
+
     let id = nextId(db, "findings");
     let inserted = 0;
-    let unmatched = 0;
+    let duplicates = 0;
+    const rejected: string[] = [];
+    const unquoted: string[] = [];
 
-    for (const wo of wos) {
-      const text = `${wo.subject || ""} ${wo.description || ""}`;
-      const hit = normalizeWoText(text);
-      if (!hit) {
-        unmatched++;
+    for (const f of incoming) {
+      const woId = num(f.wo_id);
+      const sourceText = sourceByWo[String(woId)];
+      if (!woId || sourceText === undefined) {
+        rejected.push(`work order ${f.wo_id} was not in the input`);
         continue;
       }
-      const woId = num(wo.id);
-      const { rows } = db.query(
-        "select 1 as hit from findings where asset_id = $1 and wo_id = $2 and issue_code = $3 and source = 'wo_text' limit 1",
-        [assetId, woId, hit.issue]
+
+      const issue = String(f.issue_code || "");
+      if (ISSUE_CODES.indexOf(issue) === -1) {
+        rejected.push(`unknown issue_code "${issue}" on work order ${woId}`);
+        continue;
+      }
+
+      // Canonicalised before the enum check, not after: an agent reply of "electrical panel"
+      // is the enum's `electrical_panel` and should be kept, not silently downgraded.
+      let component = canonicalComponent(String(f.component || "unspecified"));
+      if (COMPONENT_CODES.indexOf(component) === -1) component = "unspecified";
+
+      const severity = AGENT_SEVERITY[String(f.severity || "")];
+      if (severity === undefined) {
+        rejected.push(`unknown severity "${f.severity}" on work order ${woId}`);
+        continue;
+      }
+
+      // The lock. An unverifiable claim is dropped rather than stored as the work
+      // order's own words — this is the whole reason the agent can be trusted with
+      // severity, which now feeds the score.
+      const quote = String(f.quote || "");
+      if (!quoteFoundIn(sourceText, quote)) {
+        unquoted.push(`${issue}: quote not found in work order ${woId}`);
+        continue;
+      }
+
+      // The agent's own sentences, stored as it wrote them, with the verified quote as
+      // the last element. Nothing is composed here: the row that preceded this one held
+      // an engine-built sentence, which is how a template ended up in the evidence
+      // column in the first place. Presentation belongs to the UI.
+      const evidenceArr: string[] = Array.isArray(f.evidence)
+        ? f.evidence.filter((x: unknown) => typeof x === "string" && x.trim().length > 0)
+        : [];
+      if (evidenceArr.length === 0) {
+        rejected.push(`no evidence text on work order ${woId} (${issue})`);
+        continue;
+      }
+      evidenceArr.push(quote);
+
+      // Absent means absent. The agent returns -1 when it has no basis for a figure —
+      // the platform's schema model rejects a nullable type, so a negative sentinel is
+      // how "not calculated" travels. It lands as 0, which is already this table's
+      // no-confidence value (unusable photos carry it) and which the UI prints as a
+      // dash. Nothing is defaulted: a fabricated 0.55 on every row is what this replaced.
+      const stated = typeof f.confidence === "number" && f.confidence >= 0;
+      const confidence = stated ? clamp(num(f.confidence), 0, 1) : 0;
+
+      // Keyed on the component too. Without it a work order stating corrosion on both the
+      // compressor and the coil stored the first and counted the second as a duplicate,
+      // so the component chips understated the work order — the same defect the regex had.
+      // Safe for every count on the page: `occurrence_count` is the number of DISTINCT
+      // wo_ids per issue, so a second row for a work order already in that list cannot
+      // move it. Only the per-component grouping gains an entry, which is the point.
+      const { rows: dup } = db.query(
+        `select 1 as hit from findings
+          where asset_id = $1 and wo_id = $2 and issue_code = $3 and component = $4
+            and source = 'wo_text' limit 1`,
+        [assetId, woId, issue, component]
       );
-      if (rows.length > 0) continue;
+      if (dup.length > 0) {
+        duplicates++;
+        continue;
+      }
 
       db.query(
         `insert into findings
@@ -798,22 +1165,19 @@ server.addHandler({
           id++,
           assetId,
           woId,
-          hit.issue,
-          hit.component,
-          "unknown",
-          0.55,
-          JSON.stringify([
-            `Work order ${woId} text states: "${String(wo.subject || "").slice(0, 160)}".`,
-            "Derived from work-order wording, not from photo evidence.",
-          ]),
-          String(wo.scheduledStart || wo.createdTime || ""),
+          issue,
+          component,
+          severity,
+          confidence,
+          JSON.stringify(evidenceArr),
+          dateByWo[String(woId)] || "",
           now,
         ]
       );
       inserted++;
     }
 
-    return { ok: true, work_orders_scanned: wos.length, inserted, unmatched };
+    return { ok: true, asset_id: assetId, inserted, replaced, duplicates, rejected, unquoted };
   },
 });
 
@@ -834,7 +1198,9 @@ function computeStats(db: any, assetId: number, totalCorrective: number) {
   const allRows = rows.map((r: any) => ({
     wo_id: num(r.wo_id),
     issue_code: String(r.issue_code),
-    component: String(r.component || "unspecified"),
+    // Canonicalised on read, not only on write: rows already stored carry both spellings,
+    // and this is the grouping key behind the issue chips and the component table.
+    component: canonicalComponent(String(r.component || "unspecified")),
     severity: String(r.severity || "unknown"),
     confidence: num(r.confidence),
     source: String(r.source),
@@ -1182,7 +1548,17 @@ server.addHandler({
         trend,
         work_order_references: eng.work_order_references, // engine-owned
         evidence,
-        confidence: eng.confidence,
+        // Every figure here is an agent's, so the fallback is now worth taking: `eng.confidence`
+        // averages the per-finding confidences, and since `wo-evidence` replaced the regex table
+        // those are graded readings rather than the old 0.55 constant. Only a genuinely absent
+        // one becomes null. 0 means absent — the same convention `save-wo-evidence` stores one
+        // layer down and the findings table already prints as a dash.
+        confidence:
+          match && typeof match.confidence === "number"
+            ? clamp(num(match.confidence), 0, 1)
+            : eng.confidence > 0
+            ? eng.confidence
+            : null,
         evidence_sources: eng.evidence_sources,
       };
     });
@@ -1219,7 +1595,18 @@ server.addHandler({
         text_derived_findings: stats.data_quality.text_derived_findings,
       },
       photo_analysis: Array.isArray(agent.photo_analysis) ? agent.photo_analysis : [],
-      analysis_source: agentIssues.length > 0 ? "photo_validation_agent" : "engine_only",
+      // Three bases, not two. The same agent now also consolidates findings already on
+      // record, and a stored row has to say which it was — judgment formed by looking at
+      // photographs and judgment formed by merging prior readings carry different weight,
+      // and nothing else in the row distinguishes them. The third value is deliberately
+      // not named after work-order text: that path also carries photo findings from an
+      // earlier run when nothing needed re-reading this time.
+      analysis_source:
+        agentIssues.length === 0
+          ? "engine_only"
+          : Array.isArray(agent.photo_analysis) && agent.photo_analysis.length > 0
+          ? "photo_validation_agent"
+          : "stored_findings_consolidated",
     };
 
     const now = nowIso();
@@ -1551,9 +1938,19 @@ server.addHandler({
     for (const w of wos) {
       priorityByWo[String(num(w.id))] = String(w.priority?.displayName || w.priority?.name || w.priority || "");
     }
+    // Ungraded findings are excluded, not scored at SEV_VALUE's 2.5 midpoint.
+    //
+    // "unknown" means nobody assigned a severity — the agent read the wording and found
+    // none in it. Averaging that in as 2.5 states an opinion the evidence never gave,
+    // and when every row was ungraded (the old regex stream wrote nothing else) the
+    // weighted mean collapsed algebraically to exactly 2.5 for the whole asset:
+    // sevNum = Σ2.5·cᵢ, sevDen = Σcᵢ, so priorities cancelled and 45% of the condition
+    // score was a constant. An ungraded row still counts toward recurrence and MTBF,
+    // which need only wo_id and issue_code — see the query above.
     const { rows: sevWoRows } = db.query(
       `select wo_id, severity, confidence, source from findings
-        where asset_id = $1 and asset_id <> 0 and source in ('photo','photo_manual','wo_text')`,
+        where asset_id = $1 and asset_id <> 0 and source in ('photo','photo_manual','wo_text')
+          and severity <> 'unknown'`,
       [assetId]
     );
     let sevNum = 0;
@@ -1563,6 +1960,8 @@ server.addHandler({
       sevNum += SEV_VALUE[String(r.severity)] !== undefined ? SEV_VALUE[String(r.severity)] * c : 2.5 * c;
       sevDen += c;
     }
+    // False when nothing was graded, which drops the severity stream entirely and lets
+    // its 0.45 redistribute across the streams that do have evidence.
     const hasFindings = sevWoRows.length > 0;
     const sevIndex = sevDen > 0 ? sevNum / sevDen : 1;
 
@@ -1833,7 +2232,6 @@ server.addHandler({
         deterioration_basis: deteriorationBasis,
         deterioration_velocity: velocity.available ? velocity.value : null,
         criticality,
-        dominant_issue: top ? top.issue : "none",
         dominant_recurrence: dominantRecurrence,
         dominant_trend: topTrend,
         rul_years: rul.available ? rul.value : null,
@@ -1843,6 +2241,12 @@ server.addHandler({
         mtbf_series: reliability.mtbf_series.available ? reliability.mtbf_series.value : null,
         // The dominant issue's own interval series answers "is THIS problem
         // accelerating?", which is sharper than the all-events series.
+        //
+        // Absent is null here, not the "none" the assessments row and column carry:
+        // `register` and `asset-detail` gate the whole dominant_issue_mtbf block on
+        // this key's truthiness, and the "none" string would fabricate that block —
+        // issue "none", empty label, three unavailable metrics — for every asset that
+        // never had a recurring issue at all.
         dominant_issue: dominant ? dominant.issue : null,
         dominant_issue_label: dominant ? dominant.display_name : null,
         dominant_mtbf_series:
@@ -2302,7 +2706,7 @@ server.addHandler({
         source: String(r.source),
         issue_code: String(r.issue_code),
         issue_label: ISSUE_LABELS[String(r.issue_code)] || String(r.issue_code),
-        component: String(r.component || ""),
+        component: r.component ? canonicalComponent(String(r.component)) : "",
         location: String(r.location || ""),
         severity: String(r.severity || "unknown"),
         confidence: num(r.confidence),
@@ -2617,7 +3021,7 @@ server.addHandler({
 server.addHandler({
   name: "clear-wo-text-findings",
   description:
-    "Delete one asset's work-order-text findings so normalize-wo-text re-derives them from the current wording. Call it immediately before normalize-wo-text and never on its own — nothing else rebuilds these rows.",
+    "Delete one asset's work-order findings without replacing them. The assessment path does not use this — save-wo-evidence takes replace=true and does the delete alongside its insert, so a failed agent cannot leave the asset emptied. Kept for Settings, which clears an asset deliberately.",
   parameters: {
     assetId: { description: "Facilio asset id", type: "number" },
   },
@@ -3240,14 +3644,10 @@ server.addHandler({
     } catch (e) {
       answerText = {};
     }
-    const flatten = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-    const MIN_QUOTE_CHARS = 12;
-    const quoted = (answerId: string, quote: string) => {
-      const q = flatten(String(quote || ""));
-      if (q.length < MIN_QUOTE_CHARS) return false;
-      const src = flatten(answerText[String(answerId)] || "");
-      return src.length > 0 && src.indexOf(q) >= 0;
-    };
+    // Delegates to the module-level lock, which `save-wo-evidence` uses too. Two copies
+    // of a check that decides whether an LLM claim is admissible would eventually drift.
+    const quoted = (answerId: string, quote: string) =>
+      quoteFoundIn(answerText[String(answerId)] || "", quote);
 
     const ia = reply?.inspection_analysis || {};
     const observations: any[] = Array.isArray(ia.observations) ? ia.observations : [];

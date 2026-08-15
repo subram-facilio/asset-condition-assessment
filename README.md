@@ -149,13 +149,28 @@ facilio vibe agent create condition-core \
   --model-params '{"verbosity":"low"}' \
   --instructions "$(cat ./agent-schemas/condition-core-instructions.txt)" \
   --output-schema-file ./agent-schemas/condition-core.json
+
+facilio vibe agent create wo-evidence \
+  --model-provider openai --model-name gpt-5.1 \
+  --instructions "$(cat ./agent-schemas/wo-evidence-instructions.txt)" \
+  --output-schema-file ./agent-schemas/wo-evidence.json
 ```
 
-Both run gpt-5.1. The model matters more here than it usually does, because both
-agents are held to constraints a weaker model fails rather than bends: the number
-lock discards an entire reply for one unseen figure, and the quote lock discards any
-inspection claim not found verbatim in the inspector's answer. A model that
-paraphrases "1.8 years" as "roughly two years" loses its whole answer.
+All three run gpt-5.1. The model matters more here than it usually does, because every
+agent is held to constraints a weaker model fails rather than bends: the number lock
+discards an entire reply for one unseen figure, and the quote lock discards any claim not
+found verbatim in its source — an inspector's answer for `condition-core`, the work
+order's own subject and description for `wo-evidence`. A model that paraphrases
+"1.8 years" as "roughly two years", or "Rust breakthrough on compressor housing base" as
+"rust broke through the housing", loses that answer.
+
+`wo-evidence` reads work-order wording and reports the issue, component, severity and
+confidence behind each corrective finding. It replaced a keyword-matching table that
+wrote severity `unknown` and confidence `0.55` into every row it produced — placeholders
+the regex was never asked to compute, which nonetheless reached the condition score
+through the 0.45 severity stream and collapsed it to a constant 2.5 on any asset without
+readable photos. Ungraded findings are now excluded from that stream rather than scored
+at its midpoint.
 
 `--model-params` is passed to the provider verbatim, so `verbosity` arrives as the Responses API's
 `text.verbosity`. Both agents write prose that a manager reads next to the numbers, and at the

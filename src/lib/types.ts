@@ -170,7 +170,8 @@ export interface RecurringIssue {
   trend: Trend;
   work_order_references: string[];
   evidence: string[];
-  confidence: number;
+  /** null when the agent produced no judgment for this issue — the card prints "—". */
+  confidence: number | null;
   evidence_sources?: string[];
 }
 

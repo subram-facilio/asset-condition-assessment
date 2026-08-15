@@ -24,7 +24,7 @@ export async function fileAction<T = any>(actionSlug: string, payload: Record<st
   return (await vibe.executeAction("facilio-cmms-files", actionSlug, payload)) as T;
 }
 
-export type AgentName = "photo-validation" | "condition-core";
+export type AgentName = "photo-validation" | "condition-core" | "wo-evidence";
 
 /**
  * Run one of the app's agents. Structured replies arrive as a JSON *string* in

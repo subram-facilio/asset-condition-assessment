@@ -603,3 +603,11 @@ You may be called in one of two modes, and must return the same structure in bot
 2. SINGLE WORK ORDER - the input describes ONE corrective work order and the attached images are only that work order's before photos. Analyze them and return the same structure scoped to that one work order: analysis_scope.corrective_work_orders_analyzed is 1, and every issue you report has occurrence_count 1, because all of these photos belong to a single corrective work order. This is the CRITICAL COUNTING RULE applied at the boundary - three photos of the same leak in this work order is one occurrence, never three.
 
 3. CONSOLIDATION - the input contains no images, only the JSON results of previous SINGLE WORK ORDER analyses for the same asset. Merge them into one consolidated asset-level analysis by normalizing issues across work orders and counting each work order once per issue. Carry the per-photo detail through into photo_analysis.
+
+   The consolidated JSON may instead be per-work-order findings that were read from each corrective work order's own WORDING, on an asset where no photograph was available. The input says so explicitly when this is the case. Consolidate them exactly as above - normalize the issues, count each work order once per issue - with three differences:
+
+   - There is no per-photo detail to carry through. Return photo_analysis as an empty array [].
+   - Report analysis_scope.photos_analyzed 0, work_orders_with_usable_photos 0, and work_orders_with_insufficient_photos equal to the number of work orders in the input.
+   - Every finding you are given was already verified against the work order's own text. Do not add a defect, a component or a severity that is not present in the input, and do not raise a severity because an issue is frequent. You are merging verified readings, not re-judging them.
+
+   The severity, component and confidence in the input are the readings to carry forward. Where a single issue appears across several work orders at different severities, report the highest as severity.overall and list what was observed in observed_levels, exactly as in the photo modes.
