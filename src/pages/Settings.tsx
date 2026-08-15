@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
 import { fn, runAgent, usd } from "../lib/vibe";
 import type { BaselineRow } from "../lib/types";
-import { Empty, ErrorBanner, Provenance } from "../lib/ui";
+import { ErrorBanner, Provenance } from "../lib/ui";
+import { BaselinesSkeleton } from "../components/PageSkeletons";
 import { PageShell } from "../components/PageShell";
 import { Card, CardTitle } from "../components/Card";
 import { Disclosure } from "../components/Disclosure";
@@ -103,14 +104,14 @@ export function Settings() {
       </PageShell>
     );
   }
-  if (!rows) return <Empty>Loading baselines…</Empty>;
+  if (!rows) return <BaselinesSkeleton />;
 
   const missing = categories.filter((c) => rows.every((r) => r.category !== c));
 
   return (
     <PageShell
       title="Baselines"
-      subtitle="AI-estimated reference values — real Facilio costs and manual overrides always win."
+      subtitle="AI-estimated reference values — real CMMS costs and manual overrides always win."
       action={
         missing.length > 0 ? (
           <FButton appearance="primary" size="medium" disabled={!!busy} onButtonClick={estimateMissing}>
@@ -197,9 +198,9 @@ export function Settings() {
                 >
                   {r.category}
                   <Provenance source={r.source} />
-                  {r.source === "override" && <StatusTag tone="good">manually set</StatusTag>}
+                  {r.source === "override" && <StatusTag tone="good">Manually Set</StatusTag>}
                   {lowCost && r.source === "ai_estimate" && (
-                    <StatusTag tone="warn">cost figures are indicative</StatusTag>
+                    <StatusTag tone="warn">Cost Figures Are Indicative</StatusTag>
                   )}
                 </span>
               </CardTitle>

@@ -2118,6 +2118,13 @@ server.addHandler({
     const top = stats.recurring_issues[0];
     const dominantRecurrence = top ? top.occurrence_rate : 0;
     const topTrend = top ? top.trend : "insufficient_evidence";
+    // No dominant issue is written as an empty code and an empty label, never a word.
+    // Nothing branches on either — `register` and `asset-detail` only string-coerce them
+    // for display — and ISSUE_LABELS has no entry for a sentinel, so "none" reached the
+    // register's Dominant issue column raw, beside labels like "Corrosion". Empty lands
+    // on the table's own "—" fallback instead.
+    const dominantIssueCode = top ? top.issue : "";
+    const dominantIssueLabel = top ? top.display_name : "";
     const trendKnown = !!top && topTrend !== "insufficient_evidence";
     const trendFactor = topTrend === "increasing" ? 1 : topTrend === "recurring" || topTrend === "stable" ? 0.4 : 0;
     const rulFactor = rulYears <= 1 ? 1 : rulYears >= 8 ? 0 : round((8 - rulYears) / 7, 2);
@@ -2142,14 +2149,24 @@ server.addHandler({
     /* ---- CAPEX: no cost fields exist in this org, so configured rates ---- */
     const avgRepair = num(cfg.avg_repair_cost);
     const replacementCost = num(cfg.replacement_cost);
+    // A real 36-month window, not a calendar-year one. Comparing on year alone with
+    // `>= now - 3` admitted the current year plus THREE full prior years — up to 47
+    // months of work orders labelled "last 3 years" — inflating repair_spend and the
+    // spendRatio that feeds the P1 gate.
+    const threeYearsAgo = Date.now() - 3 * 365.25 * 86400000;
     const recentWos = wos.filter((w) => {
-      const d = String(w.scheduledStart || w.createdTime || "");
-      return d && num(d.slice(0, 4)) >= num(nowIso().slice(0, 4)) - 3;
+      const t = ms(String(w.scheduledStart || w.createdTime || ""));
+      return t !== null && t >= threeYearsAgo;
     }).length;
     const repairSpend = recentWos * avgRepair;
     const spendRatio = replacementCost > 0 ? repairSpend / replacementCost : 0;
+    // `rul.available` guards the rulYears test, exactly as the REPLACE rule below already
+    // does. Without it an unavailable RUL lands here as rulYears = 0, and "remaining life
+    // unknown" silently reads as "remaining life is under 2 years" — promoting a HIGH-risk
+    // asset with no purchase date to P1 (and through P1, to REPLACE) on a figure the same
+    // handler just reported as impossible to derive.
     const capexPriority =
-      riskLevel === "HIGH" && (rulYears < 2 || spendRatio > 0.3)
+      riskLevel === "HIGH" && ((rul.available && rulYears < 2) || spendRatio > 0.3)
         ? "P1"
         : riskLevel === "HIGH" || (riskLevel === "MEDIUM" && topTrend === "increasing")
         ? "P2"
@@ -2226,6 +2243,11 @@ server.addHandler({
         corrective_pressure_index: round(pressureIndex, 2),
         streams_used: streamsUsed,
         age_years: age.available ? age.value : null,
+        // The date itself, not just the age derived from it. The asset page's "In
+        // service" fact used to read the photo agent's `asset` block, whose output
+        // schema has no purchasedDate — so a recorded date still showed "not recorded".
+        // asset-detail serves this straight out of evidence_json.
+        purchased_date: purchased ? purchased.slice(0, 10) : null,
         expected_life_years: expectedLife,
         condition_factor: conditionFactor,
         deterioration,
@@ -2299,7 +2321,7 @@ server.addHandler({
       },
       cost_basis:
         cfg.source === "actuals"
-          ? "actual costs logged in Facilio"
+          ? "actual costs logged in the CMMS"
           : cfg.source === "override"
           ? "manually overridden in Settings"
           : "AI-estimated reference rates — treat as indicative",
@@ -2321,7 +2343,7 @@ server.addHandler({
         category,
         score,
         grade,
-        top ? top.issue : "none",
+        dominantIssueCode,
         round(dominantRecurrence * 100, 0),
         topTrend,
         deterioration,
@@ -2460,8 +2482,8 @@ server.addHandler({
       category,
       score,
       grade,
-      dominant_issue: top ? top.issue : "none",
-      dominant_issue_label: top ? top.display_name : "None",
+      dominant_issue: dominantIssueCode,
+      dominant_issue_label: dominantIssueLabel,
       dominant_recurrence_pct: round(dominantRecurrence * 100, 0),
       trend_direction: topTrend,
       deterioration,
@@ -2791,8 +2813,15 @@ server.addHandler({
             warranty: metricOf(inp.warranty_status, "no warranty expiry date recorded"),
             // The inspection stream was computed and weighted but never returned here,
             // so the UI could not report it either way. It can now.
+            //
+            // Read from the top level of evidence_json, not from `inputs`: `assess`
+            // stores `inspection_basis` beside `inputs`, so the `inp.` read always came
+            // back undefined and every asset reported "no inspection evidence" even
+            // when the inspection stream carried 0.35 of its score.
             inspection_stream: metricOf(
-              inp.inspection_basis && inp.inspection_basis !== "none" ? inp.inspection_basis : null,
+              evidenceJson?.inspection_basis && evidenceJson.inspection_basis !== "none"
+                ? evidenceJson.inspection_basis
+                : null,
               "no inspection evidence reached this assessment"
             ),
             warranty_gate_applied: inp.warranty_gate_applied === true,

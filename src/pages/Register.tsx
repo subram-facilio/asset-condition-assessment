@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
 import { fn, usd } from "../lib/vibe";
 import type { Assessment } from "../lib/types";
-import { Empty, ErrorBanner, useRoute } from "../lib/ui";
+import { ErrorBanner, useRoute } from "../lib/ui";
+import { RegisterSkeleton } from "../components/PageSkeletons";
 import PageHeader from "../components/PageHeader";
 import StatCards from "../components/StatCards";
 import type { StatCard } from "../components/StatCards";
@@ -226,7 +227,9 @@ export function Register() {
               {row.dominant_issue_label || "—"}
             </FText>
           }
-          meta={row.dominant_recurrence_pct ? `${row.dominant_recurrence_pct}% of findings` : undefined}
+          // Per work order, not per finding: the engine derives this from
+          // COUNT(DISTINCT wo_id) over total corrective work orders.
+          meta={row.dominant_recurrence_pct ? `${row.dominant_recurrence_pct}% of work orders` : undefined}
         />
       ),
     },
@@ -278,7 +281,7 @@ export function Register() {
     );
   }
 
-  if (!rows) return <Empty>Loading the condition register…</Empty>;
+  if (!rows) return <RegisterSkeleton />;
 
   const isFiltered = search.trim() !== "" || Object.values(filters).some(Boolean);
 

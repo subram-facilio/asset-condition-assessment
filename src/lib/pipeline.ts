@@ -48,9 +48,9 @@ export interface RunOptions {
   /**
    * Keep the findings already on record instead of re-deriving them.
    *
-   * Only the manual photo-upload path sets this. Those findings came from files an
-   * operator supplied off their own disk, and a fresh run would delete them in order
-   * to re-read bytes Facilio may not hand back — see `supplyPhotoEvidence` below.
+   * Nothing sets this today: it drove the manual photo-upload flow, which was removed
+   * once photo bytes could be read live from the CMMS. The reuse machinery it toggles
+   * still works and is kept as an escape hatch.
    */
   reuseStoredEvidence?: boolean;
 }
@@ -65,7 +65,7 @@ const AGENT_FILE_CAP = 10; // platform limit: max files per agent run
 const SINGLE_RUN_PHOTO_LIMIT = 6; // above this, batch per work order then consolidate
 
 export const INITIAL_STAGES: Stage[] = [
-  { key: "gather", label: "Fetch corrective history", detail: "Corrective work orders and BEFORE photos from Facilio", state: "pending" },
+  { key: "gather", label: "Fetch corrective history", detail: "Corrective work orders and BEFORE photos from the CMMS", state: "pending" },
   { key: "text", label: "Read work-order evidence", detail: "wo-evidence agent — issue, component and severity from each work order's wording", state: "pending" },
   { key: "photos", label: "Load photo evidence", detail: "Fetch before-photo bytes for analysis", state: "pending" },
   { key: "agent", label: "Consolidate the analysis", detail: "photo-validation agent — photographs when there are any, the work-order findings when there are not", state: "pending" },
@@ -86,7 +86,7 @@ export function initialStages(fresh = true): Stage[] {
   return INITIAL_STAGES.map((s) => {
     if (!fresh) return { ...s };
     if (s.key === "text") return { ...s, detail: "Re-read every work order's current wording" };
-    if (s.key === "photos") return { ...s, detail: "Re-read every before photo from Facilio" };
+    if (s.key === "photos") return { ...s, detail: "Re-read every before photo from the CMMS" };
     if (s.key === "findings") return { ...s, detail: "Replace each re-analyzed photo's findings" };
     return { ...s };
   });
@@ -355,7 +355,7 @@ export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions 
     const loaded = outcome.uploads.reduce((a, u) => a + u.files.length, 0);
 
     if (loaded > 0) {
-      set("photos", "done", `${loaded} photo${loaded === 1 ? "" : "s"} ${fresh ? "re-read" : "read"} live from Facilio`);
+      set("photos", "done", `${loaded} photo${loaded === 1 ? "" : "s"} ${fresh ? "re-read" : "read"} live from the CMMS`);
     } else if (cachedCount > 0) {
       // Nothing new could be read, but earlier runs already analysed most of the
       // asset. The assessment is not degraded, so this is not a failure.
@@ -380,7 +380,7 @@ export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions 
         "agent",
         "skipped",
         fresh
-          ? "Photos could not be re-read from Facilio — existing findings kept"
+          ? "Photos could not be re-read from the CMMS — existing findings kept"
           : `Reusing ${cachedCount} cached photo findings`
       );
     } else {
@@ -621,107 +621,6 @@ export async function runPipeline(assetId: number, emit: Emit, opts: RunOptions 
   };
 }
 
-/* ------------------------------------------------------------------ */
-
-/** One before-photo an operator has supplied, matched to its Facilio attachment. */
-export interface SuppliedPhoto {
-  attachment_id: number;
-  wo_id: number;
-  wo_subject: string;
-  wo_date: string;
-  filename: string;
-  content_type: string;
-  file: File;
-}
-
-/**
- * Analyse before-photos supplied by an operator.
- *
- * This exists because Facilio's attachment URLs cannot be read from a browser, so the
- * app cannot obtain the bytes itself. The operator provides the same files; each is
- * still tied to its real Facilio `attachment_id`, and the findings are stored under
- * source `photo_manual` so the register never blurs how the image arrived.
- *
- * Always one agent run per work order, never per photo — that is what keeps three
- * photos of one rust patch counting as a single occurrence.
- *
- * Afterwards the caller runs `runPipeline`, which finds these findings already stored,
- * skips the photo stage as cached, and produces the assessment with visual evidence
- * included.
- */
-export async function supplyPhotoEvidence(
-  assetId: number,
-  supplied: SuppliedPhoto[],
-  progress: (msg: string) => void
-): Promise<{ woRuns: number; photosAnalysed: number; inserted: number; rejected: string[] }> {
-  if (supplied.length === 0) return { woRuns: 0, photosAnalysed: 0, inserted: 0, rejected: [] };
-
-  progress("Reading the asset's corrective history…");
-  const bundle = await fn<Bundle>("gather", { assetId, maxWos: 40 });
-  const assetCtx = describeAsset(bundle);
-
-  // Group by work order so each run covers exactly one corrective event.
-  const byWo = new Map<number, SuppliedPhoto[]>();
-  for (const p of supplied) {
-    const list = byWo.get(p.wo_id) || [];
-    list.push(p);
-    byWo.set(p.wo_id, list);
-  }
-
-  const groups = Array.from(byWo.entries());
-  let photosAnalysed = 0;
-  const rows: any[] = [];
-
-  for (let i = 0; i < groups.length; i++) {
-    const [woId, photos] = groups[i];
-    const batch = photos.slice(0, AGENT_FILE_CAP);
-
-    progress(`Uploading ${batch.length} photo${batch.length === 1 ? "" : "s"} for work order ${woId}…`);
-    const files: Array<{ attachmentId: number; fileId: number; filename: string }> = [];
-    for (const p of batch) {
-      const stored: any = await vibe.uploadFile(new File([p.file], p.filename, { type: p.content_type || "image/jpeg" }));
-      files.push({ attachmentId: p.attachment_id, fileId: stored.fileId ?? stored.id, filename: p.filename });
-    }
-
-    // A minimal stand-in for the gathered work order: the agent needs the subject,
-    // date and photo order, and `toFindingRows` needs the same shape it already maps.
-    const woStub: GatheredWo = {
-      wo_id: woId,
-      subject: batch[0].wo_subject,
-      description: "",
-      type: "Corrective",
-      status: "",
-      priority: "",
-      event_date: batch[0].wo_date,
-      photos: [],
-      attachmentError: "",
-    };
-
-    progress(`Analyzing work order ${woId} — ${i + 1} of ${groups.length}`);
-    const input = [
-      "MODE: SINGLE WORK ORDER",
-      assetCtx,
-      "",
-      "This is ONE corrective work order. Every attached image is a BEFORE photo of this same work order,",
-      "so each distinct issue you find here has occurrence_count 1 regardless of how many photos show it.",
-      describeWo(woStub, batch.map((p) => p.filename)),
-    ].join("\n");
-
-    const analysis = await runAgent<Analysis>(input, files.map((f) => f.fileId));
-    photosAnalysed += batch.length;
-    rows.push(...toFindingRows(analysis, [{ wo: woStub, files }]));
-  }
-
-  progress(`Storing ${rows.length} finding${rows.length === 1 ? "" : "s"}…`);
-  const saved = await fn<{ inserted: number; rejected: string[] }>("save-findings", {
-    assetId,
-    payload: JSON.stringify({ findings: rows }),
-    provenance: "upload",
-  });
-
-  return { woRuns: groups.length, photosAnalysed, inserted: saved.inserted, rejected: saved.rejected || [] };
-}
-
 function describeAsset(bundle: Bundle): string {
   const a = bundle.asset;
   return [
@@ -833,7 +732,7 @@ async function loadPhotos(
         lastReason = inlineErr
           ? `inline download failed — ${inlineErr}`
           : lastReason ||
-            "Photo bytes unreachable: the facilio-cmms-files inline download failed and the pre-signed URL is not readable from a browser (no cross-origin permission)";
+            "Photo bytes unreachable: the inline download failed and the pre-signed URL is not readable from a browser (no cross-origin permission)";
         continue;
       }
 

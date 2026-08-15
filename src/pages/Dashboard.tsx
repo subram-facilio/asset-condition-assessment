@@ -366,7 +366,7 @@ export function Dashboard() {
     return (
       <EmptyState
         title="Nothing assessed yet"
-        description="Every assessment reads live corrective-maintenance history from Facilio — no questionnaires, no manual condition input. Pick an asset and watch the pipeline work through its work orders and before-maintenance photos."
+        description="Every assessment reads live corrective-maintenance history from the CMMS — no questionnaires, no manual condition input. Pick an asset and watch the pipeline work through its work orders and before-maintenance photos."
         action={
           <FButton appearance="primary" size="medium" onButtonClick={() => navigate("/run")}>
             Run your first assessment
@@ -418,7 +418,7 @@ export function Dashboard() {
               <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
                 {loading
                   ? "Reading the condition register…"
-                  : `${kpis?.assets_assessed ?? 0} asset${kpis?.assets_assessed === 1 ? "" : "s"} assessed from live Facilio corrective history.`}
+                  : `${kpis?.assets_assessed ?? 0} asset${kpis?.assets_assessed === 1 ? "" : "s"} assessed from live CMMS corrective history.`}
               </FText>
             </div>
             <DarkButton label="Run assessment" icon={{ group: "webtabs", name: "inspection" }} onClick={() => navigate("/run")} />

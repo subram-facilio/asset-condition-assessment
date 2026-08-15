@@ -154,6 +154,18 @@ h4 {
   --va-shimmer-base: var(--color-neutral-01-80, #283648);
   --va-shimmer-sweep: var(--color-neutral-01-70, #384a62);
 }
+/* Placeholders sitting on a Card rather than the plain container. The base above is
+   --color-neutral-01-80 (#283648) in dark, which is the *exact* fill of
+   --colors-background-midground-subtle: a placeholder on a card vanishes between
+   sweeps. Both themes step one palette stop further from the card surface. */
+.ca-skeleton-on-midground .va-shimmer {
+  --va-shimmer-base: var(--color-neutral-02-30, #dbdbdb);
+  --va-shimmer-sweep: var(--color-neutral-02-10, #f5f5f5);
+}
+:root[data-theme="dark"] .ca-skeleton-on-midground .va-shimmer {
+  --va-shimmer-base: var(--color-neutral-01-70, #384a62);
+  --va-shimmer-sweep: var(--color-neutral-01-60, #607796);
+}
 @keyframes va-shimmer {
   0% {
     background-position: 100% 50%;

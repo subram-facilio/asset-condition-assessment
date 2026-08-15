@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FButton, FIcon, FSpinner, FText } from "@facilio/dsm-react-wrapper";
 import { fn } from "../lib/vibe";
+import { cancelBatch, cancelRequested, getSnapshot, startBatch, subscribe } from "../lib/runStore";
 import {
   estimateSeconds,
   initialStages,
-  runBatch,
   type AssetRun,
   type AssetRunState,
   type PipelineResult,
@@ -12,7 +12,8 @@ import {
   type StageState,
 } from "../lib/pipeline";
 import type { AssetRow } from "../lib/types";
-import { Empty, ErrorBanner } from "../lib/ui";
+import { ErrorBanner } from "../lib/ui";
+import { RunAssessmentSkeleton } from "../components/PageSkeletons";
 import { PageShell } from "../components/PageShell";
 import { Card, CardTitle, CardNote } from "../components/Card";
 import SegmentedProgressBar from "../components/SegmentedProgressBar";
@@ -354,15 +355,18 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
   // Insertion-ordered, so the queue runs in the order the user picked.
   const [selected, setSelected] = useState<number[]>(presetAssetId ? [presetAssetId] : []);
   const [query, setQuery] = useState("");
-  const [runs, setRuns] = useState<AssetRun[]>([]);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState("");
-  const [elapsed, setElapsed] = useState(0);
+  // Run state lives in a module, not here. `App` rebuilds this page on every hashchange,
+  // so owning the queue locally meant opening the register mid-batch threw the whole view
+  // away — the run carried on invisibly and came back looking like it had never started.
+  const run = useSyncExternalStore(subscribe, getSnapshot);
+  const { runs, running } = run;
 
-  // A ref, not state: `runBatch` closes over this and must see the latest value
-  // between assets without the loop being re-created.
-  const cancelRef = useRef(false);
-  const startedRef = useRef(0);
+  // Only the picker's own failure. Batch failures live on the store, so they survive the
+  // navigation that used to lose them.
+  const [pickerError, setPickerError] = useState("");
+  const error = run.error || pickerError;
+
+  const [elapsed, setElapsed] = useState(0);
 
   // The scrolling picker, so a quick-select can return it to the top.
   const listRef = useRef<HTMLDivElement>(null);
@@ -370,15 +374,21 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
   useEffect(() => {
     fn<{ assets: AssetRow[] }>("assets", { pageSize: 200 })
       .then((r) => setAssets(r.assets))
-      .catch((e) => setError(String(e?.message || e)));
+      .catch((e) => setPickerError(String(e?.message || e)));
   }, []);
 
-  // Tick the elapsed clock only while a batch is in flight.
+  // Tick the elapsed clock while a batch is in flight, and once on mount so a page
+  // arriving mid-batch shows the real elapsed time instead of 0:00 until the next second.
+  // Both ends come from the store, so the clock is continuous across a navigation rather
+  // than restarting from whenever this component happened to mount.
   useEffect(() => {
+    const tick = () => setElapsed((run.finishedAt || Date.now()) - run.startedAt);
+    if (!run.startedAt) return;
+    tick();
     if (!running) return;
-    const id = setInterval(() => setElapsed(Date.now() - startedRef.current), 1000);
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [running]);
+  }, [running, run.startedAt, run.finishedAt]);
 
   // The picker is split into a pinned block of everything currently selected,
   // then the rest of the matches. Two reasons to pin rather than leave rows in
@@ -446,28 +456,20 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
 
   async function start(targets: AssetRow[]) {
     if (targets.length === 0) return;
-    cancelRef.current = false;
-    startedRef.current = Date.now();
     setElapsed(0);
-    setRunning(true);
-    setError("");
-    try {
-      const finished = await runBatch(
-        targets.map((a) => ({ asset_id: a.asset_id, name: a.name })),
-        setRuns,
-        () => cancelRef.current
-      );
-      setRuns(finished);
-      // Refresh the picker so grades and "not assessed" reflect what just ran.
-      fn<{ assets: AssetRow[] }>("assets", { pageSize: 200 })
-        .then((r) => setAssets(r.assets))
-        .catch(() => {});
-    } catch (e: any) {
-      setError(String(e?.message || e));
-    } finally {
-      setRunning(false);
-      setElapsed(Date.now() - startedRef.current);
-    }
+    setPickerError("");
+    // The picker refresh is handed to the store rather than awaited here, because the
+    // batch routinely outlives this component now — a run finishing while the user sits
+    // on the register still has to leave the grades correct for the next mount.
+    await startBatch(
+      targets.map((a) => ({ asset_id: a.asset_id, name: a.name })),
+      {},
+      () => {
+        fn<{ assets: AssetRow[] }>("assets", { pageSize: 200 })
+          .then((r) => setAssets(r.assets))
+          .catch(() => {});
+      }
+    );
   }
 
   function retryFailed() {
@@ -483,7 +485,7 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
       </PageShell>
     );
   }
-  if (!assets) return <Empty>Loading assets from Facilio…</Empty>;
+  if (!assets) return <RunAssessmentSkeleton />;
 
   const finishedCount = runs.filter((r) => r.state === "done").length;
   const failedCount = runs.filter((r) => r.state === "failed").length;
@@ -500,7 +502,7 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
   return (
     <PageShell
       title="Run assessment"
-      subtitle="The agent reads each asset's corrective work orders and before-maintenance photos from Facilio and produces one consolidated condition assessment. Every run re-reads that evidence from Facilio rather than reusing stored findings, so an edited or deleted work order is reflected the next time you run it. Nothing is entered by hand."
+      subtitle="The agent reads each asset's corrective work orders and before-maintenance photos from the CMMS and produces one consolidated condition assessment. Every run re-reads that evidence from the CMMS rather than reusing stored findings, so an edited or deleted work order is reflected the next time you run it. Nothing is entered by hand."
     >
       {/* ---------------------------------------------------------- 1 · assets */}
       <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
@@ -624,11 +626,8 @@ export function RunAssessment({ presetAssetId }: { presetAssetId?: number }) {
           <div style={{ display: "flex", gap: "var(--spacing-container-large)", flexShrink: 0 }}>
             {running && (
               <OutlineButton
-                label={cancelRef.current ? "Stopping…" : "Stop after current"}
-                onClick={() => {
-                  cancelRef.current = true;
-                  setRuns((prev) => prev.map((r) => ({ ...r })));
-                }}
+                label={cancelRequested() ? "Stopping…" : "Stop after current"}
+                onClick={cancelBatch}
               />
             )}
             <DarkButton
@@ -747,9 +746,9 @@ function Results({ runs, results }: { runs: AssetRun[]; results: PipelineResult[
       {unreadable > 0 && (
         <ErrorBanner>
           <b>
-            Photos exist in Facilio but could not be read for {unreadable} asset{unreadable === 1 ? "" : "s"}.
+            Photos exist in the CMMS but could not be read for {unreadable} asset{unreadable === 1 ? "" : "s"}.
           </b>{" "}
-          Facilio mints a download URL for each attachment, but its storage host does not permit a browser to
+          The CMMS mints a download URL for each attachment, but its storage host does not permit a browser to
           read the file, so the bytes never reach the app and no visual evidence could be analysed. Those
           assessments rest on work-order text alone.
         </ErrorBanner>

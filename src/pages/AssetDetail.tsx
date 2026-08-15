@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { FButton, FText } from "@facilio/dsm-react-wrapper";
 import { fn, usd } from "../lib/vibe";
 import type { AssetDetail as Detail, Metric, MtbfGap, Narrative } from "../lib/types";
-import { Empty, ErrorBanner, GapList, LifecycleBar, MtbfBars, Provenance, Spark, Val, pretty } from "../lib/ui";
+import { ErrorBanner, GapList, LifecycleBar, MtbfBars, Provenance, Spark, Val, pretty } from "../lib/ui";
+import { AssetDetailSkeleton } from "../components/PageSkeletons";
 import { DetailShell, RailFact, type DetailTab } from "../components/DetailShell";
 import { Card, CardTitle, CardNote } from "../components/Card";
 import { Disclosure } from "../components/Disclosure";
@@ -149,11 +150,11 @@ function Qa({ q, a }: { q: string; a?: string }) {
  * would have reported an inspector's words as work-order wording.
  */
 const SOURCE_LABEL: Record<string, string> = {
-  photo: "photo",
-  photo_manual: "photo (supplied)",
-  photo_unusable: "photo (unusable)",
-  wo_text: "Work order",
-  inspection: "inspection",
+  photo: "Photo",
+  photo_manual: "Photo (Supplied)",
+  photo_unusable: "Photo (Unusable)",
+  wo_text: "Work Order",
+  inspection: "Inspection",
 };
 
 /**
@@ -166,7 +167,19 @@ const SEVERITY_LABEL: Record<string, string> = {
   unknown: "not graded",
 };
 
-const severityText = (s: string) => SEVERITY_LABEL[s] || s;
+/**
+ * Title-cased, because these sit in the same chip row as `pretty(i.status)` and
+ * `pretty(i.trend)`. A raw `high severity` beside `Highly Recurring` and `Recurring` read
+ * as a different class of thing rather than the third badge in one set.
+ */
+const severityText = (s: string) => pretty(SEVERITY_LABEL[s] || s);
+
+/**
+ * The issue card keeps the noun — "High Severity" is unambiguous next to a recurrence
+ * status, where a bare "High" could be read as the frequency. Values that already carry
+ * their own wording, like "Not Graded", say it once.
+ */
+const severityChipText = (s: string) => (SEVERITY_LABEL[s] ? severityText(s) : `${severityText(s)} Severity`);
 
 /**
  * `unspecified` is the same kind of value one field over. The wo-evidence enum carries it
@@ -175,7 +188,7 @@ const severityText = (s: string) => SEVERITY_LABEL[s] || s;
  * gap in the data instead of the reading it is.
  */
 const COMPONENT_LABEL: Record<string, string> = {
-  unspecified: "part not named",
+  unspecified: "Part Not Named",
 };
 
 const componentText = (c: string) => COMPONENT_LABEL[c] || pretty(c);
@@ -321,13 +334,13 @@ export function AssetDetail({ assetId }: { assetId: number }) {
       </div>
     );
   }
-  if (!d) return <Empty>Loading analysis…</Empty>;
+  if (!d) return <AssetDetailSkeleton />;
 
   if (!a && !an) {
     return (
       <EmptyState
         title={`Asset ${assetId} has not been assessed`}
-        description="Run its assessment and the agent will read every corrective work order and before-maintenance photo Facilio holds for it."
+        description="Run its assessment and the agent will read every corrective work order and before-maintenance photo the CMMS holds for it."
         action={
           <FButton
             appearance="primary"
@@ -381,7 +394,11 @@ export function AssetDetail({ assetId }: { assetId: number }) {
           <RailFact label="Model">{an?.asset?.model || "—"}</RailFact>
           <RailFact label="Location">{an?.asset?.location || "—"}</RailFact>
           <RailFact label="In service">
-            {String(an?.asset?.purchasedDate || "").slice(0, 10) || "not recorded"}
+            {/* inputs.purchased_date is the engine's own read of the asset record.
+                The agent's `asset` block is only a fallback for rows assessed before
+                the engine stored the date — its schema has no purchasedDate, so on
+                its own this fact always said "not recorded". */}
+            {String(inputs.purchased_date || an?.asset?.purchasedDate || "").slice(0, 10) || "not recorded"}
           </RailFact>
           <RailFact label="Expected service life">
             {inputs.expected_life_years ? `${inputs.expected_life_years} years` : "—"}
@@ -390,7 +407,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
           <RailFact label="Warranty">
             {a?.warranty?.available ? (
               <StatusTag tone={a.warranty.value === "active" ? "good" : "mute"}>
-                {a.warranty.value}
+                {pretty(a.warranty.value || "")}
                 {inputs.warranty_expiry ? ` ${inputs.warranty_expiry}` : ""}
               </StatusTag>
             ) : (
@@ -536,9 +553,11 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                   icon={{ group: "webtabs", name: "inspection" }}
                   action={
                     <StatusTag
+                      // "good", not "success" — StatusTag's Tone set has no "success",
+                      // and an unknown tone silently falls back to grey `mute`.
                       tone={
                         crossStream.confidence_in_recommendation === "high"
-                          ? "success"
+                          ? "good"
                           : crossStream.confidence_in_recommendation === "low"
                           ? "warn"
                           : "info"
@@ -645,7 +664,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
             <LifecycleBar
               age={ageMetric}
               expectedLife={Number(inputs.expected_life_years) || 0}
-              purchasedYear={String(an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
+              purchasedYear={String(inputs.purchased_date || an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
             />
           </Card>
 
@@ -823,12 +842,15 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                     {/* A severity nobody graded and a trend nobody could establish describe the
                         evidence, not the issue. Printed on every card they crowded out the two
                         chips that do describe it — recurrence status and occurrence count. */}
-                    {/* Shown even when ungraded. "not graded" is now a stated reading of
-                        the evidence rather than a missing value, so hiding the chip would
-                        drop information the reader needs to weigh the card. */}
-                    <StatusTag tone={severityTone(i.severity.overall)}>
-                      {i.severity.overall === "unknown" ? "not graded" : `${i.severity.overall} severity`}
-                    </StatusTag>
+                    {/* Dropped when the wording graded nothing: the chip then reports the state
+                        of the evidence, not the issue, which is exactly why the trend chip below
+                        hides on insufficient_evidence. The reading itself is not lost — the
+                        Evidence tab still marks each ungraded finding. */}
+                    {i.severity.overall !== "unknown" && (
+                      <StatusTag tone={severityTone(i.severity.overall)}>
+                        {severityChipText(i.severity.overall)}
+                      </StatusTag>
+                    )}
                     {i.trend !== "insufficient_evidence" && (
                       <StatusTag tone={trendTone(i.trend)}>{pretty(i.trend)}</StatusTag>
                     )}
@@ -968,7 +990,7 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                             like the pipeline dropped something. */}
                         {c.highest_severity === "unknown" ? (
                           <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                            not graded
+                            {severityText("unknown")}
                           </FText>
                         ) : (
                           <StatusTag tone={severityTone(c.highest_severity)}>
@@ -1045,8 +1067,8 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               <CardTitle
                 icon={{ group: "webtabs", name: "inspection" }}
                 action={
-                  <StatusTag tone={inspectionEvidence.operability?.value === "operational" ? "success" : "info"}>
-                    {(inspectionEvidence.operability?.value || "unknown").replace(/_/g, " ")}
+                  <StatusTag tone={inspectionEvidence.operability?.value === "operational" ? "good" : "info"}>
+                    {pretty(inspectionEvidence.operability?.value || "unknown")}
                   </StatusTag>
                 }
               >
@@ -1059,10 +1081,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                     <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
                       <StatusTag tone={severityTone(o.severity)}>{severityText(o.severity)}</StatusTag>
                       <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
-                        {o.type.replace(/_/g, " ")}
+                        {pretty(o.type)}
                       </FText>
                       <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                        {o.component.replace(/_/g, " ")}
+                        {componentText(o.component)}
                         {o.location ? ` · ${o.location}` : ""}
                       </FText>
                     </div>
@@ -1081,7 +1103,9 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 <Qa
                   q="Did the last repair hold"
                   a={inspectionEvidence.repair_effectiveness
-                    .map((r) => `${r.issue.replace(/_/g, " ")}: ${r.verdict.replace(/_/g, " ")}`)
+                    // The issue is the same label the cards show, so it is title-cased to match;
+                    // the verdict stays lower case because this renders as a prose answer, not a badge.
+                    .map((r) => `${pretty(r.issue)}: ${r.verdict.replace(/_/g, " ")}`)
                     .join(" · ")}
                 />
               )}

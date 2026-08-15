@@ -129,18 +129,20 @@ export function GapList({ items, title = "Not available" }: { items?: Unavailabl
 
 /** Provenance badge — says whether a number was measured, overridden or estimated. */
 export function Provenance({ source, confidence }: { source?: string; confidence?: number }) {
+  // Title case, like every other badge on the page. This renders as a bordered pill beside
+  // StatusTag chips, so a lower-case word here read as a stray caption rather than a label.
   const label =
     source === "actuals"
-      ? "actual"
+      ? "Actual"
       : source === "override"
-      ? "override"
+      ? "Override"
       : source === "configured"
-      ? "configured"
+      ? "Configured"
       : source === "fallback"
-      ? "fallback"
+      ? "Fallback"
       : source === "asset_sample"
-      ? "AI estimate, this asset"
-      : "AI estimate";
+      ? "AI Estimate, This Asset"
+      : "AI Estimate";
   const low = typeof confidence === "number" && confidence > 0 && confidence < 0.6;
   const ink =
     source === "actuals"
