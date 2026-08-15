@@ -71,6 +71,25 @@ export function toneVars(tone: Tone | string): CSSProperties {
   } as CSSProperties;
 }
 
+/**
+ * The full tone tint — wash, ink, border, both themes — as custom properties, for surfaces
+ * larger than a chip. `toneVars` hands down only the ink, which is right for a 10px chart
+ * mark but leaves a 56px matrix cell to invent its own wash. Pair with `.ca-matrix-cell`.
+ */
+export function toneCellVars(tone: Tone | string): CSSProperties {
+  const key = (tone in TONES ? tone : "mute") as Tone;
+  const light = TONES[key];
+  const dark = DARK_TONES[key];
+  return {
+    "--cell-bg": light.bg,
+    "--cell-ink": light.ink,
+    "--cell-border": light.border,
+    "--cell-bg-dark": dark.bg,
+    "--cell-ink-dark": dark.ink,
+    "--cell-border-dark": dark.border,
+  } as CSSProperties;
+}
+
 /* ------------------------------------------------------- tone mapping helpers */
 
 export function severityTone(s: string): Tone {

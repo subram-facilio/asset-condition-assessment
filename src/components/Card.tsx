@@ -11,13 +11,17 @@ export function Card({
   children,
   style,
   tone = "midground",
+  className,
 }: {
   children: ReactNode;
   style?: CSSProperties;
   tone?: "midground" | "container";
+  /** For theme-flipping treatments that need a stylesheet rule, e.g. .ca-verdict-banner. */
+  className?: string;
 }) {
   return (
     <div
+      className={className}
       style={{
         border: "1px solid var(--colors-border-neutral-base-subtle)",
         borderRadius: "var(--border-large)",

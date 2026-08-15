@@ -15,9 +15,29 @@
       "runtimeExecutable": "sh",
       "runtimeArgs": [
         "-c",
-        "VIBE_PROXY_TARGET=http://localhost:5399 npm run dev"
+        "VIBE_PROXY_TARGET=http://localhost:5399 npm run dev -- --port ${PORT:-5274} --strictPort"
       ],
       "port": 5274,
+      "autoPort": true
+    },
+    {
+      "name": "condition-assessment-fixtures-alt",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "VIBE_PROXY_TARGET=http://localhost:5399 npm run dev -- --port ${PORT:-5281} --strictPort"
+      ],
+      "port": 5281,
+      "autoPort": true
+    },
+    {
+      "name": "ca-fixtures-5398",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "VIBE_PROXY_TARGET=http://localhost:5398 npm run dev -- --port ${PORT:-5285} --strictPort"
+      ],
+      "port": 5285,
       "autoPort": true
     }
   ]

@@ -293,6 +293,63 @@ h4 {
   background-color: var(--ca-ink-dark);
 }
 
+/* The verdict banner itself: the recommendation's tone ink as a left edge, so which
+   verdict a page opens with registers at a squint, before any word is read. Pair with
+   toneCellVars(recommendationTone(...)). The gold stat inside re-sets the same custom
+   properties on its own subtree, so the two treatments never bleed into each other. */
+/* An inset shadow, not border-left: Card sets `border` as an inline style, which beats
+   any stylesheet rule, and a wider left border would nudge the content 2px anyway. */
+.ca-verdict-banner {
+  box-shadow: inset 3px 0 0 var(--cell-ink);
+}
+:root[data-theme="dark"] .ca-verdict-banner {
+  box-shadow: inset 3px 0 0 var(--cell-ink-dark);
+}
+
+/* The verdict banner's cost marker: the figure the recommendation favours wears the
+   gold (warn-tone) tint, so which path was chosen is readable from the numbers alone.
+   Same custom-property handoff as .ca-matrix-cell — pair with toneCellVars("warn"). */
+.ca-verdict-stat {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--spacing-container-medium) var(--spacing-container-xlarge);
+  border-radius: var(--border-medium);
+  background: var(--cell-bg);
+  border: 1px solid var(--cell-border);
+}
+:root[data-theme="dark"] .ca-verdict-stat {
+  background: var(--cell-bg-dark);
+  border-color: var(--cell-border-dark);
+}
+
+/* Risk-matrix cells: a StatusTag tint stretched over a clickable bucket. Same
+   custom-property handoff as .ca-status-tag, so a cell and the chips its assets
+   wear in the register can never disagree, and both flip together in dark mode. */
+.ca-matrix-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  border-radius: var(--border-medium);
+  background: var(--cell-bg);
+  color: var(--cell-ink);
+  border: 1px solid var(--cell-border);
+  text-decoration: none;
+}
+:root[data-theme="dark"] .ca-matrix-cell {
+  background: var(--cell-bg-dark);
+  color: var(--cell-ink-dark);
+  border-color: var(--cell-border-dark);
+}
+/* Only links get the affordance — empty cells render as a plain div. */
+a.ca-matrix-cell:hover {
+  box-shadow: inset 0 0 0 1px var(--cell-ink);
+}
+:root[data-theme="dark"] a.ca-matrix-cell:hover {
+  box-shadow: inset 0 0 0 1px var(--cell-ink-dark);
+}
+
 /* Four KPI tiles in a row; two columns once the rail stacks below the main column. */
 .ca-kpi-row {
   grid-template-columns: repeat(4, minmax(0, 1fr));

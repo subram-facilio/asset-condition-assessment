@@ -17,6 +17,7 @@ import {
   riskTone,
   severityTone,
   statusTone,
+  toneCellVars,
   trendTone,
 } from "../components/StatusTag";
 
@@ -168,18 +169,17 @@ const SEVERITY_LABEL: Record<string, string> = {
 };
 
 /**
- * Title-cased, because these sit in the same chip row as `pretty(i.status)` and
- * `pretty(i.trend)`. A raw `high severity` beside `Highly Recurring` and `Recurring` read
- * as a different class of thing rather than the third badge in one set.
+ * Upper-cased to read as a grade, matching the HIGH RISK / REPLACE / P1 chips the page
+ * already wears — severity is the same class of verdict, not prose.
  */
-const severityText = (s: string) => pretty(SEVERITY_LABEL[s] || s);
+const severityText = (s: string) => pretty(SEVERITY_LABEL[s] || s).toUpperCase();
 
 /**
- * The issue card keeps the noun — "High Severity" is unambiguous next to a recurrence
- * status, where a bare "High" could be read as the frequency. Values that already carry
- * their own wording, like "Not Graded", say it once.
+ * The issue card keeps the noun — "HIGH SEVERITY" is unambiguous next to a recurrence
+ * status, where a bare "HIGH" could be read as the frequency. Values that already carry
+ * their own wording, like "NOT GRADED", say it once.
  */
-const severityChipText = (s: string) => (SEVERITY_LABEL[s] ? severityText(s) : `${severityText(s)} Severity`);
+const severityChipText = (s: string) => (SEVERITY_LABEL[s] ? severityText(s) : `${severityText(s)} SEVERITY`);
 
 /**
  * `unspecified` is the same kind of value one field over. The wo-evidence enum carries it
@@ -428,6 +428,93 @@ export function AssetDetail({ assetId }: { assetId: number }) {
       {/* ══════════════════════════════════════════════════════════ overview */}
       {tab === "overview" && a && (
         <>
+          {/* The verdict, first. Everything on this page is evidence for one decision, and
+              the old layout answered it six blocks down, inside the Assessment card, styled
+              like every other grey box. The reader's question is "what do we do with this
+              asset" — so the answer opens the page, and the cost facts that frame it
+              (spend so far vs replacement) sit on the same line instead of in their own
+              card at the bottom. */}
+          <Card
+            className="ca-verdict-banner"
+            style={{
+              ...toneCellVars(recommendationTone(a.recommendation)),
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--spacing-container-large)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--spacing-container-xlarge)",
+                flexWrap: "wrap",
+              }}
+            >
+              {/* The word once, big — not big text plus a tag saying the same thing. The
+                  tone-colored chip already exists in the page header directly above. */}
+              <span style={{ font: "var(--text-heading-smb-20)", color: "var(--colors-text-main)" }}>
+                {pretty(a.recommendation)}
+              </span>
+              {a.capex_priority !== "-" && (
+                <StatusTag tone={priorityTone(a.capex_priority)}>CAPEX {a.capex_priority}</StatusTag>
+              )}
+              {/* The two figures the verdict weighs, in the KPI tiles' value-over-label shape.
+                  The one the RECOMMENDATION favours wears the gold tint — keyed to the verdict,
+                  never to which number is smaller: on a REPLACE asset the repair figure is
+                  usually still the cheaper one, and gilding it would visually recommend the
+                  path the engine just rejected. */}
+              <span
+                style={{
+                  marginLeft: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "var(--spacing-container-xlarge)",
+                  flexWrap: "wrap",
+                }}
+              >
+                {[
+                  { label: "Repair spend (3y)", value: usd(a.repair_spend), favoured: a.recommendation !== "REPLACE", prov: false },
+                  { label: "Replacement", value: usd(a.replacement_cost), favoured: a.recommendation === "REPLACE", prov: true },
+                ].map((s) => (
+                  <span
+                    key={s.label}
+                    className={s.favoured ? "ca-verdict-stat" : undefined}
+                    style={
+                      s.favoured
+                        ? { ...toneCellVars("warn"), color: "var(--cell-ink)" }
+                        : { display: "inline-flex", flexDirection: "column", gap: 2, padding: "var(--spacing-container-medium) 0" }
+                    }
+                    title={s.favoured ? `The ${pretty(a.recommendation)} recommendation prices against this figure` : undefined}
+                  >
+                    <span style={{ font: "var(--text-heading-med-16)", color: s.favoured ? "inherit" : "var(--colors-text-main)" }}>
+                      {s.value}
+                    </span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--spacing-container-medium)" }}>
+                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                        {s.label}
+                      </FText>
+                      {s.prov && baselines && (
+                        <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
+                      )}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            </div>
+            {narrative?.why_recommendation && (
+              <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
+                {narrative.why_recommendation}
+              </FText>
+            )}
+            {a.warranty_gate_applied && (
+              <CardNote>
+                The rule produced {a.rule_recommendation}, but this asset is still under warranty, so it was
+                downgraded — replacing an asset the manufacturer is liable for wastes the remaining cover.
+              </CardNote>
+            )}
+          </Card>
+
           <div
             style={{
               display: "grid",
@@ -463,6 +550,18 @@ export function AssetDetail({ assetId }: { assetId: number }) {
             />
           </div>
 
+          {/* The lifecycle bar is the Age and Remaining-life tiles drawn as one line, so it
+              belongs directly under them rather than in its own titled card further down —
+              the bar's own labels already say everything the title used to. */}
+          <Card>
+            <LifecycleBar
+              age={ageMetric}
+              expectedLife={Number(inputs.expected_life_years) || 0}
+              purchasedYear={String(inputs.purchased_date || an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
+              rul={a?.rul}
+            />
+          </Card>
+
           {narrative && narrative.source === "condition_core_agent" && (
             <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
               <CardTitle icon={{ group: "form builder", name: "selectall" }}>Assessment</CardTitle>
@@ -482,61 +581,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 </div>
               </Split>
 
-              {/* The verdict, called out rather than buried: this is what the page is for. */}
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--spacing-container-large)",
-                  padding: "var(--spacing-container-xlarge)",
-                  borderRadius: "var(--border-medium)",
-                  border: "1px solid var(--colors-border-neutral-base-subtle)",
-                  backgroundColor: "var(--colors-background-container)",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "var(--spacing-container-large)",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <StatusTag tone={recommendationTone(a.recommendation)}>{a.recommendation}</StatusTag>
-                  {a.capex_priority !== "-" && (
-                    <StatusTag tone={priorityTone(a.capex_priority)}>CAPEX {a.capex_priority}</StatusTag>
-                  )}
-                  <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                    {usd(a.replacement_cost)}
-                  </FText>
-                  {baselines && (
-                    <Provenance source={baselines.source} confidence={baselines.confidence?.replacement} />
-                  )}
-                </div>
-                <FText appearance="bodyReg14" styleProps={{ color: "textDescription", display: "block" }}>
-                  {narrative.why_recommendation}
-                </FText>
-                {a.warranty_gate_applied && (
-                  <FText appearance="captionReg12" styleProps={{ color: "textMain", display: "block" }}>
-                    The rule produced {a.rule_recommendation}, but this asset is still under warranty, so it was
-                    downgraded — replacing an asset the manufacturer is liable for wastes the remaining cover.
-                  </FText>
-                )}
-              </div>
-
-              {narrative.caveats?.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-medium)" }}>
-                  <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
-                    What this assessment could not see
-                  </FText>
-                  <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-body-reg-14)", color: "var(--colors-text-description)" }}>
-                    {narrative.caveats.map((c, i) => (
-                      <li key={i}>{c}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
+              {/* The verdict itself moved to the banner at the top of the tab; the caveats
+                  moved into "How this was computed". What remains here is one job: the
+                  reasoning behind the numbers, told once, with nothing competing for the
+                  reader's eye inside the same card. */}
               <CardNote>
                 Written by the condition-core agent from the computed values, and verified to contain no
                 figure absent from them.
@@ -659,42 +707,31 @@ export function AssetDetail({ assetId }: { assetId: number }) {
             </Card>
           </Split>
 
-          <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
-            <CardTitle icon={{ group: "time-date", name: "date-tick" }}>Lifecycle</CardTitle>
-            <LifecycleBar
-              age={ageMetric}
-              expectedLife={Number(inputs.expected_life_years) || 0}
-              purchasedYear={String(inputs.purchased_date || an?.asset?.purchasedDate || "").slice(0, 4) || undefined}
-            />
-          </Card>
-
-          {/* Cost sits on the verdict page because it is half the repair-or-replace question.
-              The old "Risk & cost" tab paired it with a Risk card that restated the KPIs above
-              field for field, so only the cost half survived the merge. */}
-          {a && (
-            <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
-              <CardTitle icon={{ group: "files", name: "document" }}>Cost basis</CardTitle>
-              <Row label="Corrective spend, last 3 years">{usd(a.repair_spend)}</Row>
-              <Row label="Estimated replacement">{usd(a.replacement_cost)}</Row>
-              <Row label="CAPEX priority" last>
-                {a.capex_priority === "-" ? (
-                  <FText appearance="bodyReg14" styleProps={{ color: "textCaption" }}>
-                    none
-                  </FText>
-                ) : (
-                  <StatusTag tone={priorityTone(a.capex_priority)}>{a.capex_priority}</StatusTag>
-                )}
-              </Row>
-            </Card>
-          )}
+          {/* The Cost basis card is gone, not lost: spend-vs-replacement and the CAPEX tag
+              are the verdict's framing, so they live on the verdict banner now — a page
+              that repeats a fact in three places reads as three facts. */}
 
           {/* Everything that proves the verdict rather than stating it. Collapsed by default:
               these are the app's engineering guarantees, and on the surface they read as noise
               to the person who just wants to know whether to replace a chiller. */}
           <Disclosure
             title="How this was computed"
-            subtitle="formulas, risk weights, and what the engine corrected"
+            subtitle="formulas, risk weights, blind spots, and what the engine corrected"
           >
+            {/* The caveats moved here from the Assessment card. They are statements about
+                the evidence's coverage, not about the asset — methodology, in the reader's
+                terms — and mid-page they out-shouted the findings they qualify. */}
+            {narrative && narrative.source === "condition_core_agent" && narrative.caveats?.length > 0 && (
+              <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-medium)" }}>
+                <CardTitle icon={{ group: "action", name: "info" }}>What this assessment could not see</CardTitle>
+                <ul style={{ margin: 0, paddingLeft: 18, font: "var(--text-body-reg-14)", color: "var(--colors-text-description)" }}>
+                  {narrative.caveats.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+
             {Array.isArray(inputs.streams_used) && inputs.streams_used.length > 0 && (
               <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
                 <CardTitle icon={{ group: "chart-data", name: "bar-graph" }}>Evidence streams</CardTitle>
@@ -1075,22 +1112,45 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 What the inspector wrote
               </CardTitle>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
+              {/* One bordered tile per observation, the same shape as the Findings tab's issue
+                  cards, with the inspector's own words as the body — they are the evidence, and
+                  the old layout set them in footnote grey under a loose chip row. */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xlarge)" }}>
                 {inspectionEvidence.observations.slice(0, showAllObs ? inspectionEvidence.observations.length : 3).map((o, i) => (
-                  <div key={`${o.answer_id}-${o.type}-${i}`} style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-small)" }}>
+                  <div
+                    key={`${o.answer_id}-${o.type}-${i}`}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "var(--spacing-container-large)",
+                      padding: "var(--spacing-container-xlarge)",
+                      borderRadius: "var(--border-medium)",
+                      border: "1px solid var(--colors-border-neutral-base-subtler)",
+                      backgroundColor: "var(--colors-background-container)",
+                    }}
+                  >
                     <div style={{ display: "flex", alignItems: "center", gap: "var(--spacing-container-large)", flexWrap: "wrap" }}>
-                      <StatusTag tone={severityTone(o.severity)}>{severityText(o.severity)}</StatusTag>
                       <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
                         {pretty(o.type)}
                       </FText>
-                      <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-                        {componentText(o.component)}
-                        {o.location ? ` · ${o.location}` : ""}
+                      <StatusTag tone={severityTone(o.severity)}>{severityText(o.severity)}</StatusTag>
+                      <span style={{ marginLeft: "auto" }}>
+                        <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                          {componentText(o.component)}
+                          {o.location ? ` · ${o.location}` : ""}
+                        </FText>
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        paddingLeft: "var(--spacing-container-large)",
+                        borderLeft: "2px solid var(--colors-border-neutral-base-subtle)",
+                      }}
+                    >
+                      <FText appearance="bodyReg14" styleProps={{ color: "textMain", display: "block" }}>
+                        “{o.quote}”
                       </FText>
                     </div>
-                    <FText appearance="captionReg12" styleProps={{ color: "textDescription", display: "block" }}>
-                      “{o.quote}”
-                    </FText>
                   </div>
                 ))}
               </div>
@@ -1118,21 +1178,18 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               </CardNote>
             </Card>
           )}
-          <FText appearance="captionReg12" styleProps={{ color: "textCaption", display: "block" }}>
-            {findings.length} finding{findings.length === 1 ? "" : "s"} from{" "}
-            {scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0} corrective work orders ·{" "}
-            {photoFindings.length} photo-backed · {textFindings.length} from work-order wording
-            {inspectionEvidence?.kept ? ` · ${inspectionEvidence.kept} inspector-observed` : ""}
-          </FText>
-
-          {a?.unavailable && a.unavailable.length > 0 && (
-            <GapList items={a.unavailable} title="What this assessment couldn't see" />
-          )}
-
+          {/* Evidence first, gaps last: the reader came to see what the assessment rests on,
+              and opening with a list of what it lacks buried the table under the caveats. */}
           <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
             <CardTitle icon={{ group: "webtabs", name: "workorder" }}>
-              Work orders behind this assessment
+              Evidence behind this assessment
             </CardTitle>
+            <CardNote>
+              {findings.length} finding{findings.length === 1 ? "" : "s"} from{" "}
+              {scope?.corrective_work_orders_analyzed ?? a?.corrective_wo_count ?? 0} corrective work orders ·{" "}
+              {photoFindings.length} photo-backed · {textFindings.length} from work-order wording
+              {inspectionEvidence?.kept ? ` · ${inspectionEvidence.kept} inspector-observed` : ""}
+            </CardNote>
             {findings.length === 0 ? (
               <CardNote>No findings recorded.</CardNote>
             ) : (
@@ -1140,7 +1197,9 @@ export function AssetDetail({ assetId }: { assetId: number }) {
                 minWidth={720}
                 head={
                   <>
-                    <th style={TABLE_HEAD}>Work order</th>
+                    {/* "Reference", not "Work order": inspection rows reuse this column for
+                        the inspection id, and the Source chip on the row says which it is. */}
+                    <th style={TABLE_HEAD}>Reference</th>
                     <th style={TABLE_HEAD}>Issue</th>
                     <th style={TABLE_HEAD}>Severity</th>
                     <th style={TABLE_HEAD}>Conf.</th>
@@ -1189,6 +1248,10 @@ export function AssetDetail({ assetId }: { assetId: number }) {
               <ShowAll n={findings.length} onClick={() => setShowAllFindings(true)} />
             )}
           </Card>
+
+          {a?.unavailable && a.unavailable.length > 0 && (
+            <GapList items={a.unavailable} title="What this assessment couldn't see" />
+          )}
         </>
       )}
     </DetailShell>

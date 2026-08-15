@@ -260,10 +260,15 @@ export function LifecycleBar({
   age,
   expectedLife,
   purchasedYear,
+  rul,
 }: {
   age?: Metric<number> | null;
   expectedLife: number;
   purchasedYear?: string;
+  /** Engine-computed remaining useful life. Often shorter than expected-life minus age —
+      that gap between the translucent segment's end and the track's end is the life the
+      engine predicts this asset will NOT reach. */
+  rul?: Metric<number> | null;
 }) {
   if (!age || !age.available || age.value === null) {
     return (
@@ -286,11 +291,16 @@ export function LifecycleBar({
   const pct = clampPct((age.value / Math.max(expectedLife, 1)) * 100);
   const over = age.value > expectedLife;
 
+  const rulYears = rul && rul.available && rul.value !== null ? Number(rul.value.toFixed(1)) : null;
+  // Predicted end of life on the same scale as the track. Only drawn when it lands
+  // inside the track — an over-life asset already paints the whole bar red.
+  const rulEndPct = rulYears !== null && !over ? clampPct(((age.value + rulYears) / Math.max(expectedLife, 1)) * 100) : null;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-large)" }}>
       <span
         style={{
-          display: "block",
+          display: "flex",
           height: 10,
           borderRadius: 999,
           backgroundColor: "var(--colors-background-midground-dark)",
@@ -302,19 +312,31 @@ export function LifecycleBar({
             display: "block",
             height: "100%",
             width: `${pct}%`,
-            borderRadius: 999,
             backgroundColor: over
               ? "var(--colors-icon-semantic-red, #d64545)"
               : "var(--colors-icon-primary-default)",
           }}
         />
+        {rulEndPct !== null && rulEndPct > pct && (
+          <i
+            style={{
+              display: "block",
+              height: "100%",
+              width: `${rulEndPct - pct}%`,
+              backgroundColor: "var(--colors-icon-primary-default)",
+              opacity: 0.3,
+            }}
+          />
+        )}
       </span>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--spacing-container-large)" }}>
         <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
           {purchasedYear ? `in service ${purchasedYear}` : "in service"}
         </FText>
         <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-          {age.value}y of {expectedLife}y {over ? "· past expected life" : ""}
+          {age.value}y of {expectedLife}y
+          {rulYears !== null ? ` · ${rulYears}y remaining` : ""}
+          {over ? " · past expected life" : ""}
         </FText>
       </div>
     </div>

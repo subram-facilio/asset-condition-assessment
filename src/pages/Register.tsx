@@ -38,6 +38,26 @@ interface Filters {
 
 const NO_FILTERS: Filters = { grade: null, risk: null, recommendation: null };
 
+/**
+ * Filters seeded from the hash query — `#/register?grade=POOR&risk=HIGH` — so the home page's
+ * risk-matrix cells can deep-link one bucket. Read once at mount; after that the register owns
+ * its filter state. Unknown values fall back to null rather than filtering everything out.
+ */
+function filtersFromHash(): Filters {
+  const query = window.location.hash.split("?")[1];
+  if (!query) return NO_FILTERS;
+  const params = new URLSearchParams(query);
+  const pick = (key: keyof Filters, allowed: string[]) => {
+    const v = String(params.get(key) || "").toUpperCase();
+    return allowed.includes(v) ? v : null;
+  };
+  return {
+    grade: pick("grade", ["GOOD", "FAIR", "AVERAGE", "POOR", "CRITICAL"]),
+    risk: pick("risk", ["HIGH", "MEDIUM", "LOW"]),
+    recommendation: pick("recommendation", ["REPLACE", "REFURBISH", "REPAIR", "MONITOR"]),
+  };
+}
+
 const FILTER_DEFINITIONS: FilterDefinition[] = [
   {
     key: "grade",
@@ -104,7 +124,7 @@ export function Register() {
   const [rows, setRows] = useState<Assessment[] | null>(null);
   const [kpis, setKpis] = useState<RegisterKpis | null>(null);
   const [error, setError] = useState("");
-  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [filters, setFilters] = useState<Filters>(filtersFromHash);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 

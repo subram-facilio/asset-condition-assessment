@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FButton, FIcon, FText } from "@facilio/dsm-react-wrapper";
 import { fn, usd } from "../lib/vibe";
@@ -10,7 +10,7 @@ import { Card, CardTitle, CardNote } from "../components/Card";
 import { Shimmer } from "../components/Shimmer";
 import { EmptyState } from "../components/EmptyState";
 import { RailBlock, RailList, RailRow } from "../components/HomeRail";
-import { StatusTag, gradeTone, priorityTone, riskTone, toneVars } from "../components/StatusTag";
+import { StatusTag, gradeTone, priorityTone, riskTone, toneCellVars, toneVars } from "../components/StatusTag";
 import { DarkButton } from "../components/Buttons";
 
 /**
@@ -201,11 +201,44 @@ function ConditionMix({ rows, avgScore }: { rows: Assessment[]; avgScore: number
 }
 
 /**
- * Risk against condition. Both axes are computed, so a cluster in the top-right is the set of
- * assets that genuinely need capital planning — not an impression.
+ * Risk-band rows of the matrix, worst first — top-right is the "act now" corner, the
+ * convention every EAM risk register follows. Ranges mirror the engine's banding
+ * (`riskScore < 40 → LOW, < 70 → MEDIUM, else HIGH` in condition-engine.ts).
+ */
+const RISK_BANDS = [
+  { key: "HIGH", label: "High", range: "70–100" },
+  { key: "MEDIUM", label: "Medium", range: "40–69" },
+  { key: "LOW", label: "Low", range: "0–39" },
+];
+
+/** Severity order of the tones, for picking a cell's colour. */
+const TONE_RANK: Record<string, number> = { good: 0, warn: 1, bad: 2, crit: 3 };
+
+/**
+ * A cell wears the worse of its two band tones, so it can never look calmer than
+ * either the grade chip or the risk chip its assets wear in the register.
+ */
+function cellTone(gradeKey: string, riskKey: string): string {
+  const g = gradeTone(gradeKey);
+  const r = riskTone(riskKey);
+  return (TONE_RANK[g] ?? 0) >= (TONE_RANK[r] ?? 0) ? g : r;
+}
+
+/**
+ * Risk against condition, as a 3×5 matrix heatmap: each cell counts the assets in one
+ * condition-band × risk-band bucket and links to the register pre-filtered to that bucket.
+ *
+ * This replaced a scatter of one dot per asset. The dots piled up on the band centres,
+ * carried no identity at 34+ assets, and their colour repeated what the x-position already
+ * said; a count in a bucket stays readable at any portfolio size, and the empty top-left /
+ * bottom-right corners say "no surprises" at a glance.
  */
 function RiskMatrix({ rows, onOpenRegister }: { rows: Assessment[]; onOpenRegister: () => void }) {
-
+  const counts = new Map<string, number>();
+  rows.forEach((r) => {
+    const key = `${r.grade}|${String(r.risk_level).toUpperCase()}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
 
   return (
     <Card style={{ display: "flex", flexDirection: "column", gap: "var(--spacing-container-xxlarge)" }}>
@@ -232,78 +265,94 @@ function RiskMatrix({ rows, onOpenRegister }: { rows: Assessment[]; onOpenRegist
       </CardTitle>
 
       <div
+        role="table"
+        aria-label="Assets bucketed by condition band and risk band. Each occupied cell links to the register filtered to that bucket."
         style={{
-          position: "relative",
-          height: 172,
-          borderRadius: "var(--border-medium)",
-          border: "1px solid var(--colors-border-neutral-base-subtler)",
-          backgroundColor: "var(--colors-background-container)",
-          // Room for the y-axis labels drawn inside the plot.
-          padding: "8px 8px 8px 28px",
-          boxSizing: "border-box",
+          display: "grid",
+          gridTemplateColumns: "88px repeat(5, minmax(0, 1fr))",
+          gap: 4,
+          alignItems: "stretch",
         }}
       >
-        {[0, 25, 50, 75, 100].map((y) => (
-          <span key={y} style={{ position: "absolute", left: 4, bottom: `calc(${y}% - 6px)` }}>
+        <span />
+        {GRADES.map((g) => (
+          <div key={g.key} style={{ textAlign: "center", paddingBottom: 2 }}>
             <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-              {y}
+              {g.label}
             </FText>
-          </span>
+          </div>
         ))}
 
-        <div style={{ position: "relative", width: "100%", height: "100%" }}>
-          {[25, 50, 75].map((y) => (
-            <span
-              key={y}
+        {RISK_BANDS.map((band) => (
+          <Fragment key={band.key}>
+            <div
               style={{
-                position: "absolute",
-                left: 0,
-                right: 0,
-                bottom: `${y}%`,
-                height: 1,
-                backgroundColor: "var(--colors-border-neutral-base-subtler)",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+                alignItems: "flex-end",
+                paddingRight: 10,
               }}
-            />
-          ))}
+            >
+              <FText appearance="headingMed14" styleProps={{ color: "textMain" }}>
+                {band.label}
+              </FText>
+              <FText appearance="captionReg12" styleProps={{ color: "textCaption" }}>
+                risk {band.range}
+              </FText>
+            </div>
 
-          {rows.map((r) => {
-            // Condition 1..5 across, risk 0..100 up. Clamped so an extreme value stays inside.
-            const x = Math.min(Math.max(((r.score - 1) / 4) * 100, 2), 98);
-            const y = Math.min(r.risk_score, 96);
-            return (
-              <a
-                key={r.asset_id}
-                href={`#/asset/${r.asset_id}`}
-                title={`${r.asset_name} — condition ${r.score}, risk ${r.risk_score}`}
-                // Named for screen readers: this scatter is now the only on-page view of
-                // the ranking, so a dot has to say what it is rather than just be red.
-                aria-label={`${r.asset_name}: condition ${r.score}, risk ${r.risk_score}, ${r.risk_level} risk`}
-                className="ca-tone-fill"
-                style={{
-                  position: "absolute",
-                  left: `${x}%`,
-                  bottom: `${y}%`,
-                  width: 10,
-                  height: 10,
-                  marginLeft: -5,
-                  borderRadius: "50%",
-                  border: "1.5px solid var(--colors-background-container)",
-                  ...toneVars(riskTone(r.risk_level)),
-                }}
-              />
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", paddingLeft: 28 }}>
-        {["Good", "Fair", "Average", "Poor", "Critical"].map((l) => (
-          <FText key={l} appearance="captionReg12" styleProps={{ color: "textCaption" }}>
-            {l}
-          </FText>
+            {GRADES.map((g) => {
+              const n = counts.get(`${g.key}|${band.key}`) ?? 0;
+              if (n === 0) {
+                return (
+                  <div
+                    key={g.key}
+                    className="ca-matrix-cell"
+                    aria-label={`No assets in ${g.label} condition at ${band.label.toLowerCase()} risk`}
+                    style={{
+                      background: "var(--colors-background-midground-subtle)",
+                      border: "1px solid transparent",
+                      color: "var(--colors-text-caption)",
+                      font: "var(--text-caption-reg-12)",
+                    }}
+                  >
+                    –
+                  </div>
+                );
+              }
+              return (
+                <a
+                  key={g.key}
+                  href={`#/register?grade=${g.key}&risk=${band.key}`}
+                  className="ca-matrix-cell"
+                  title={`${n} asset${n === 1 ? "" : "s"} — ${g.label} condition, ${band.label.toLowerCase()} risk`}
+                  aria-label={`${n} asset${n === 1 ? "" : "s"} in ${g.label} condition at ${band.label.toLowerCase()} risk. Opens the register filtered to this bucket.`}
+                  style={{ ...toneCellVars(cellTone(g.key, band.key)), font: "var(--text-heading-smb-20)" }}
+                >
+                  {n}
+                </a>
+              );
+            })}
+          </Fragment>
         ))}
       </div>
 
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--spacing-container-xlarge)",
+          flexWrap: "wrap",
+        }}
+      >
+        <StatusTag tone="good">Healthy</StatusTag>
+        <StatusTag tone="warn">Monitor</StatusTag>
+        <StatusTag tone="bad">Plan action</StatusTag>
+        <StatusTag tone="crit">Critical</StatusTag>
+      </div>
+
+      <CardNote>Click a cell to open the register filtered to that bucket.</CardNote>
     </Card>
   );
 }
@@ -491,14 +540,14 @@ export function Dashboard() {
             <div className="ca-si-item">
               <RailBlock
                 title="Needs attention"
-                onViewAll={capexQueue.length > 4 ? () => navigate("/register") : undefined}
+                onViewAll={capexQueue.length > 10 ? () => navigate("/register") : undefined}
               >
                 <RailList
                   loading={loading}
                   empty={capexQueue.length === 0}
                   emptyText="No asset currently warrants capital planning."
                 >
-                  {capexQueue.slice(0, 4).map((r) => (
+                  {capexQueue.slice(0, 10).map((r) => (
                     <RailRow
                       key={r.asset_id}
                       href={`#/asset/${r.asset_id}`}
