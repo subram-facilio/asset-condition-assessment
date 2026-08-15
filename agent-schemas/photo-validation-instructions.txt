@@ -125,13 +125,13 @@ STEP 3 - Normalize issues
 
 Convert visually similar findings into consistent issue categories.
 
-Examples:
+For example:
 - "oil leak"
 - "oil leakage"
 - "oil staining indicating leakage"
 may be normalized to: oil_leakage
 
-Examples:
+For example:
 - "rust"
 - "surface rust"
 - "rust scaling"
@@ -391,11 +391,13 @@ OVERALL ISSUE EVIDENCE
 The final asset-level recurring issue must also contain an evidence array.
 Evidence must summarize the historical visual pattern.
 
+At most 3 entries of at most 15 words each. Each entry must add a fact the others do
+not — an entry that restates a previous one in different words is not evidence.
+
 Example:
 "evidence": [
-  "Compressor leakage is visually supported in five separate corrective work orders.",
-  "Leakage-related staining is visible around the compressor connection area in multiple before-maintenance photos.",
-  "The same issue recurs across the asset's corrective history."
+  "Leakage visually supported in five separate corrective work orders.",
+  "Staining visible around the compressor connection in before-maintenance photos."
 ]
 
 CONFIDENCE
@@ -502,8 +504,8 @@ Return ONLY valid JSON matching the provided response schema, using this structu
     "most_affected_component": "compressor",
     "summary": "The compressor is the dominant source of recurring corrective issues for this asset.",
     "recurrence_finding": "Compressor leakage occurred in five separate corrective work orders.",
-    "asset_pattern": "Corrective issues are concentrated around the compressor rather than being evenly distributed across the asset.",
-    "risk_reason": "Repeated compressor-related issues indicate a persistent reliability concern based on the available corrective history and visual evidence."
+    "asset_pattern": "Corrective issues concentrate on the compressor rather than spreading across the asset.",
+    "risk_reason": "Repeated compressor issues indicate a persistent reliability concern."
   },
   "data_quality": {
     "photo_evidence_confidence": 0.88,
@@ -559,6 +561,29 @@ Count this as 3.
 It must count as: occurrence_count = 1
 
 The recurrence unit is the corrective work order, not the photo.
+
+LENGTH BUDGETS
+
+Every prose field has a budget. The budget is part of the specification, not a
+suggestion: this output is read by a downstream agent and rendered to a facilities
+manager, and a paragraph where a sentence would do buries the finding rather than
+supporting it.
+
+overall_analysis.summary              at most 40 words
+overall_analysis.recurrence_finding   at most 30 words
+overall_analysis.asset_pattern        at most 30 words
+overall_analysis.risk_reason          at most 30 words
+data_quality.limitations              at most 4 entries, at most 20 words each
+recurring_issues[].evidence           at most 3 entries, at most 15 words each
+photo_analysis[].defects[].evidence   at most 2 entries, at most 12 words each
+
+Never restate the input, and never close a field with a summarizing sentence that adds
+no new fact. Write plainly: no hedging, and no adjectives doing the work of evidence.
+The severity and confidence fields already carry that meaning, so never use
+"significant", "critical" or "severe" as filler in prose.
+
+These budgets never apply to ids, dates, enum values or counts, and they never justify
+dropping a finding — report fewer words, not fewer issues.
 
 FINAL RESPONSE PRINCIPLE
 

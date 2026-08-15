@@ -140,11 +140,13 @@ Each agent is created with its specification as its instructions:
 ```bash
 facilio vibe agent create photo-validation \
   --model-provider openai --model-name gpt-5.1 \
+  --model-params '{"verbosity":"low"}' \
   --instructions "$(cat ./agent-schemas/photo-validation-instructions.txt)" \
   --output-schema-file ./agent-schemas/photo-validation.json
 
 facilio vibe agent create condition-core \
   --model-provider openai --model-name gpt-5.1 \
+  --model-params '{"verbosity":"low"}' \
   --instructions "$(cat ./agent-schemas/condition-core-instructions.txt)" \
   --output-schema-file ./agent-schemas/condition-core.json
 ```
@@ -154,6 +156,13 @@ agents are held to constraints a weaker model fails rather than bends: the numbe
 lock discards an entire reply for one unseen figure, and the quote lock discards any
 inspection claim not found verbatim in the inspector's answer. A model that
 paraphrases "1.8 years" as "roughly two years" loses its whole answer.
+
+`--model-params` is passed to the provider verbatim, so `verbosity` arrives as the Responses API's
+`text.verbosity`. Both agents write prose that a manager reads next to the numbers, and at the
+provider default they write paragraphs where a sentence carries the finding. `reasoning_effort` is
+deliberately left unset: reasoning is what buys the precision the two locks demand, while
+`verbosity` shortens the prose without spending it. Per-field word budgets live in each agent's
+instructions and are repeated on the matching schema leaf so the two cannot drift.
 
 ## Known platform limitations
 
@@ -176,7 +185,9 @@ streams that do exist, and the redistribution is reported in the assessment's de
 Observations reach the condition score on the **next** assessment: the core agent runs after the
 numbers are final, so evidence it contributes cannot move the score it was asked to explain.
 
-**Structured-output schemas must not describe object or array nodes.** Repeated sub-schemas are deduplicated into `$ref`s, and the provider rejects a `$ref` carrying sibling keywords: `$ref cannot have keywords {'description'}`. Descriptions live only on scalar leaves; the semantics live in the instructions.
+**Structured-output schemas must not describe a `$ref` node.** Repeated sub-schemas are deduplicated into `$ref`s, and the provider rejects a `$ref` carrying sibling keywords: `$ref cannot have keywords {'description'}`. Neither schema here uses `$defs` today, so descriptions sit on scalar leaves and on the array nodes that carry a length budget; the semantics live in the instructions. If a sub-schema is ever repeated verbatim and gets deduplicated, its description is what breaks first.
+
+**A schema's length and count constraints never reach the provider.** `output_schema` is not forwarded as written: flow-ai converts it to a Pydantic model first (`app/core/agno/output_schema.py`), and that conversion reads only `type`, `enum`, `required`, `default` and `description`. `maxLength`, `minLength`, `maxItems`, `minItems` and `pattern` are all dropped in the round-trip — silently, so the schema looks enforced in the repo and is not enforced at runtime. `description` is the only per-field keyword that survives, which is why every length budget in these two schemas is written as prose inside it and repeated in the instructions.
 
 ## Auditability
 

@@ -11,30 +11,31 @@
         },
         "summary": {
           "type": "string",
-          "description": "Two or three sentences stating the asset's overall condition and the single most important reason for it."
+          "description": "One or two sentences, at most 40 words, stating the asset's overall condition and the single most important reason for it."
         },
         "why_condition": {
           "type": "string",
-          "description": "Why the condition score is what it is, referring only to the evidence streams named in the calculated results."
+          "description": "One sentence, at most 35 words. Why the condition score is what it is, referring only to the evidence streams named in the calculated results."
         },
         "why_main_problem": {
           "type": "string",
-          "description": "What the dominant recurring problem is, how many corrective work orders evidence it, and which component it concentrates on."
+          "description": "One sentence, at most 35 words. What the dominant recurring problem is, how many corrective work orders evidence it, and which component it concentrates on."
         },
         "why_deterioration": {
           "type": "string",
-          "description": "Whether the asset is getting worse and on what evidence. Say plainly when deterioration is inferred rather than measured."
+          "description": "One sentence, at most 35 words. Whether the asset is getting worse and on what evidence. Say plainly when deterioration is inferred rather than measured."
         },
         "why_rul": {
           "type": "string",
-          "description": "How remaining useful life follows from age, expected life and condition. Name any input that was an estimate."
+          "description": "One sentence, at most 35 words. How remaining useful life follows from age, expected life and condition. Name any input that was an estimate."
         },
         "why_recommendation": {
           "type": "string",
-          "description": "Why the recommendation supplied in the calculated results follows from the evidence. You explain the decision; you never change it."
+          "description": "One sentence, at most 35 words. Why the recommendation supplied in the calculated results follows from the evidence. You explain the decision; you never change it."
         },
         "caveats": {
           "type": "array",
+          "description": "One entry for every metric the input lists as unavailable, written for a facilities manager rather than an engineer. At most 4 entries, at most 20 words each.",
           "items": { "type": "string" }
         }
       },
@@ -55,18 +56,21 @@
       "properties": {
         "corroborations": {
           "type": "array",
+          "description": "Where two independent streams support the same conclusion. At most 3 entries, at most 25 words each.",
           "items": { "type": "string" }
         },
         "conflicts": {
           "type": "array",
+          "description": "Where the streams disagree, stated without resolving it in favour of either. At most 3 entries, at most 25 words each.",
           "items": { "type": "string" }
         },
         "repair_effectiveness_note": {
           "type": "string",
-          "description": "Whether past repairs are holding, judged only from wording that says so. Empty string when nothing in the input speaks to it."
+          "description": "At most 30 words. Whether past repairs are holding, judged only from wording that says so. Empty string when nothing in the input speaks to it."
         },
         "data_gaps": {
           "type": "array",
+          "description": "What was missing, and which conclusion would be firmer if the gap were closed. At most 3 entries, at most 25 words each.",
           "items": { "type": "string" }
         },
         "confidence_in_recommendation": {
@@ -76,6 +80,7 @@
         },
         "what_would_change_this": {
           "type": "array",
+          "description": "The specific new evidence that would move the recommendation, written so someone could go and get it. At most 3 entries, at most 25 words each.",
           "items": { "type": "string" }
         }
       },
@@ -240,10 +245,12 @@
             },
             "basis": {
               "type": "array",
+              "description": "Why the value is what it is — the reference, standard or reasoning. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             },
             "assumptions": {
               "type": "array",
+              "description": "What you had to assume because the input did not say — size, capacity, market, installation scope. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             }
           },
@@ -263,10 +270,12 @@
             },
             "basis": {
               "type": "array",
+              "description": "Why the value is what it is — the reference, standard or reasoning. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             },
             "assumptions": {
               "type": "array",
+              "description": "What you had to assume because the input did not say — size, capacity, market, installation scope. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             }
           },
@@ -290,10 +299,12 @@
             },
             "basis": {
               "type": "array",
+              "description": "Why the value is what it is — the reference, standard or reasoning. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             },
             "assumptions": {
               "type": "array",
+              "description": "What you had to assume because the input did not say — size, capacity, market, installation scope. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             }
           },
@@ -321,10 +332,12 @@
             },
             "basis": {
               "type": "array",
+              "description": "Why the value is what it is — the reference, standard or reasoning. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             },
             "assumptions": {
               "type": "array",
+              "description": "What you had to assume because the input did not say — size, capacity, market, installation scope. Never empty. At most 2 entries, at most 15 words each.",
               "items": { "type": "string" }
             }
           },

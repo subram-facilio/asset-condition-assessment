@@ -224,6 +224,7 @@
           },
           "evidence": {
             "type": "array",
+            "description": "What was visible that evidences this issue, one short phrase per entry. At most 3 entries, at most 15 words each.",
             "items": {
               "type": "string"
             }
@@ -420,16 +421,20 @@
           "type": "string"
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "description": "At most 40 words. What the photographic evidence shows about this asset overall, leading with the finding that matters most."
         },
         "recurrence_finding": {
-          "type": "string"
+          "type": "string",
+          "description": "At most 30 words. What recurs, and across how many corrective work orders. The recurrence unit is the work order, never the photograph."
         },
         "asset_pattern": {
-          "type": "string"
+          "type": "string",
+          "description": "At most 30 words. The pattern the issues form across the asset, if any. Empty string when the evidence supports none."
         },
         "risk_reason": {
-          "type": "string"
+          "type": "string",
+          "description": "At most 30 words. Why the risk level is what it is, from the visual evidence alone."
         }
       },
       "required": [
@@ -455,6 +460,7 @@
         },
         "limitations": {
           "type": "array",
+          "description": "What the photographic evidence could not support, written plainly. At most 4 entries, at most 20 words each.",
           "items": {
             "type": "string"
           }
@@ -572,6 +578,7 @@
                 },
                 "evidence": {
                   "type": "array",
+                  "description": "What is visible in this photo that evidences the defect, one short phrase per entry. At most 2 entries, at most 12 words each.",
                   "items": {
                     "type": "string"
                   }
